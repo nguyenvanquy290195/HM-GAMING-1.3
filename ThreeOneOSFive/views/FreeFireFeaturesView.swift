@@ -39,7 +39,7 @@ enum FFFeatureCategory: String, CaseIterable, Identifiable, Codable {
 
     var title: String {
         switch self {
-        case .aim: return "AIM"
+        case .aim: return "MENU"
         case .aimV2: return "AIM V2"
         case .esp: return "ESP"
         }
@@ -47,7 +47,7 @@ enum FFFeatureCategory: String, CaseIterable, Identifiable, Codable {
 
     var icon: String {
         switch self {
-        case .aim: return "scope"
+        case .aim: return "line.3.horizontal"
         case .aimV2: return "scope"
         case .esp: return "eye.fill"
         }
@@ -82,7 +82,9 @@ struct FFRemoteFeature: Decodable, Identifiable, Hashable {
     let note: String?
     let enabled: Bool
     let destinationPath: String
+    let secondaryDestinationPath: String?
     let activeSHA256: String?
+    let secondaryActiveSHA256: String?
     let originalSHA256: String?
     let requiresKey: Bool?
     let updatedAt: String?
@@ -90,7 +92,9 @@ struct FFRemoteFeature: Decodable, Identifiable, Hashable {
     enum CodingKeys: String, CodingKey {
         case id, name, category, note, enabled
         case destinationPath = "destination_path"
+        case secondaryDestinationPath = "secondary_destination_path"
         case activeSHA256 = "active_sha256"
+        case secondaryActiveSHA256 = "secondary_active_sha256"
         case originalSHA256 = "original_sha256"
         case requiresKey = "requires_key"
         case updatedAt = "updated_at"
@@ -102,6 +106,7 @@ struct FFActiveRecord: Codable, Identifiable, Hashable {
     let featureID: String
     let name: String
     let destinationPath: String
+    let secondaryDestinationPath: String?
     let originalSHA256: String?
 
     var id: String { "\(game.rawValue):\(featureID)" }
@@ -114,6 +119,7 @@ struct FFAccessGrant: Decodable {
     let downloadSHA256: String?
     let expiresIn: Int?
     let destinationPath: String
+    let files: [FFGrantedFile]?
     let keyExpiresAt: String?
     let maxDevices: Int?
     let deviceCount: Int?
@@ -125,9 +131,22 @@ struct FFAccessGrant: Decodable {
         case downloadSHA256 = "download_sha256"
         case expiresIn = "expires_in"
         case destinationPath = "destination_path"
+        case files
         case keyExpiresAt = "key_expires_at"
         case maxDevices = "max_devices"
         case deviceCount = "device_count"
+    }
+}
+
+struct FFGrantedFile: Decodable {
+    let downloadURL: String
+    let downloadSHA256: String?
+    let destinationPath: String
+
+    enum CodingKeys: String, CodingKey {
+        case downloadURL = "download_url"
+        case downloadSHA256 = "download_sha256"
+        case destinationPath = "destination_path"
     }
 }
 
@@ -285,17 +304,48 @@ enum FFFeatureError: Error, LocalizedError {
 enum FFFeatureInstaller {
     private static let hashChunkSize = 1_024 * 1_024
 
+    static func delete(game: FFGameKind, destinationPath: String) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    guard let containerPath = ContainerStore.resolveAppContainerPath(bundleID: game.bundleID) else {
+                        throw FFFeatureError.containerUnavailable(game.bundleID)
+                    }
+                    var activationError: NSString?
+                    let mcmHandle = MCMActivateContainer(2, game.bundleID, false, &activationError)
+                    if mcmHandle < 0 { _ = ContainerStore.grantContainerAccess(containerPath) }
+                    let target: URL
+                    do {
+                        target = try validatedTargetURL(containerPath: containerPath, relativePath: destinationPath)
+                    } catch let error as FFFeatureError {
+                        if case .targetMissing = error {
+                            continuation.resume(returning: ())
+                            return
+                        }
+                        throw error
+                    }
+                    try FileManager.default.removeItem(at: target)
+                    continuation.resume(returning: ())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     static func install(
         remoteURL: String,
         expectedSHA256: String?,
         game: FFGameKind,
-        destinationPath: String
+        destinationPath: String,
+        allowCreate: Bool = false
     ) async throws -> Int64 {
         try await install(
             remoteURL: remoteURL,
             expectedSHA256: expectedSHA256,
             bundleID: game.bundleID,
-            destinationPath: destinationPath
+            destinationPath: destinationPath,
+            allowCreate: allowCreate
         )
     }
 
@@ -303,7 +353,8 @@ enum FFFeatureInstaller {
         remoteURL: String,
         expectedSHA256: String?,
         bundleID: String,
-        destinationPath: String
+        destinationPath: String,
+        allowCreate: Bool = false
     ) async throws -> Int64 {
         guard let url = URL(string: remoteURL),
               url.scheme?.lowercased() == "https",
@@ -356,14 +407,25 @@ enum FFFeatureInstaller {
 
                     let targetURL = try validatedTargetURL(
                         containerPath: containerPath,
-                        relativePath: destinationPath
+                        relativePath: destinationPath,
+                        allowMissing: allowCreate
                     )
-
-                    let result = try FileReplacementService.replace(
-                        target: targetURL,
-                        with: downloadedURL
-                    )
-                    continuation.resume(returning: result.byteCount)
+                    if allowCreate && !FileManager.default.fileExists(atPath: targetURL.path) {
+                        let parent = targetURL.deletingLastPathComponent()
+                        var isDirectory: ObjCBool = false
+                        guard FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory),
+                              isDirectory.boolValue else { throw FFFeatureError.invalidDestinationPath }
+                        let staging = parent.appendingPathComponent(".hm-menu-\(UUID().uuidString)")
+                        defer { try? FileManager.default.removeItem(at: staging) }
+                        try FileManager.default.copyItem(at: downloadedURL, to: staging)
+                        guard !FileManager.default.fileExists(atPath: targetURL.path) else { throw FFFeatureError.installFailed }
+                        try FileManager.default.moveItem(at: staging, to: targetURL)
+                        let attributes = try FileManager.default.attributesOfItem(atPath: targetURL.path)
+                        continuation.resume(returning: (attributes[.size] as? NSNumber)?.int64Value ?? 0)
+                    } else {
+                        let result = try FileReplacementService.replace(target: targetURL, with: downloadedURL)
+                        continuation.resume(returning: result.byteCount)
+                    }
                 } catch let error as FFFeatureError {
                     continuation.resume(throwing: error)
                 } catch let error as FileReplacementError {
@@ -387,6 +449,7 @@ enum FFFeatureInstaller {
     private static func validatedTargetURL(
         containerPath: String,
         relativePath rawPath: String,
+        allowMissing: Bool = false,
         fileManager: FileManager = .default
     ) throws -> URL {
         let relativePath = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -426,6 +489,7 @@ enum FFFeatureInstaller {
 
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: targetURL.path, isDirectory: &isDirectory) else {
+            if allowMissing { return targetURL }
             throw FFFeatureError.targetMissing(relativePath)
         }
         guard !isDirectory.boolValue else {
@@ -723,6 +787,7 @@ final class FreeFireFeatureViewModel: ObservableObject {
     private static let serverAPIURL = "https://miniapp.shopaccvt.site/proxy/api.php"
     private static let activeRecordsKey = "ffFeatureActiveRecords.v2"
     private static let keyAccessInfoKey = "hmGaming.ffKeyAccessInfo.v1"
+    private static let pendingMenuKey = "hmGaming.pendingMenuRestore.v1"
 
     @Published var selectedGame: FFGameKind = .freeFire
     @Published var selectedCategory: FFFeatureCategory = .aim
@@ -737,6 +802,8 @@ final class FreeFireFeatureViewModel: ObservableObject {
     @Published var gameKeyPrompt: FFGameKeyPrompt?
 
     private var hasLoaded = false
+    private var menuTasks: [String: Task<Void, Never>] = [:]
+    private var menuBackgroundTasks: [String: UIBackgroundTaskIdentifier] = [:]
 
     init() {
         activeRecords = Self.readActiveRecords()
@@ -765,6 +832,84 @@ final class FreeFireFeatureViewModel: ObservableObject {
         guard !hasLoaded else { return }
         hasLoaded = true
         Task { await reload() }
+    }
+
+    func resumeMenuRestores() {
+        let pending = UserDefaults.standard.object(forKey: Self.pendingMenuKey) as? [String: Date] ?? [:]
+        for record in activeRecords where record.secondaryDestinationPath != nil && pending[record.id] != nil {
+            guard menuTasks[record.id] == nil else { continue }
+            let delay = max(0, pending[record.id]!.timeIntervalSinceNow)
+            menuTasks[record.id] = Task { [weak self] in
+                if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+                guard !Task.isCancelled else { return }
+                await self?.finishMenuSession(record)
+            }
+        }
+    }
+
+    private func setMenuDeadline(_ deadline: Date?, for id: String) {
+        var pending = UserDefaults.standard.object(forKey: Self.pendingMenuKey) as? [String: Date] ?? [:]
+        pending[id] = deadline
+        UserDefaults.standard.set(pending, forKey: Self.pendingMenuKey)
+    }
+
+    private func stopMenuTask(for id: String) {
+        menuTasks.removeValue(forKey: id)?.cancel()
+        if let taskID = menuBackgroundTasks.removeValue(forKey: id), taskID != .invalid {
+            UIApplication.shared.endBackgroundTask(taskID)
+        }
+    }
+
+    private func launchMenuGame(for record: FFActiveRecord) {
+        let id = record.id
+        menuBackgroundTasks[id] = UIApplication.shared.beginBackgroundTask(withName: "HMMenuRestore") { [weak self] in
+            Task { @MainActor in self?.stopMenuTask(for: id) }
+        }
+        guard openApplicationForBundleID(record.game.bundleID) else {
+            stopMenuTask(for: id)
+            notice = "Đã cài MENU nhưng không mở được game. Tắt MENU để xóa hai file."
+            return
+        }
+
+        // Persist the first deadline in case iOS suspends this app before the process probe responds.
+        setMenuDeadline(Date().addingTimeInterval(7), for: id)
+        menuTasks[id] = Task { [weak self] in
+            guard let self else { return }
+            var startedAt = Date()
+            for _ in 0..<30 {
+                guard !Task.isCancelled else { return }
+                let state = applicationProcessStateForBundleID(record.game.bundleID)
+                if state == 1 { startedAt = Date(); break }
+                if state == -1 { break }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+            guard !Task.isCancelled else { return }
+            let deadline = startedAt.addingTimeInterval(7)
+            self.setMenuDeadline(deadline, for: id)
+            let delay = max(0, deadline.timeIntervalSinceNow)
+            if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+            guard !Task.isCancelled else { return }
+            await self.finishMenuSession(record)
+        }
+    }
+
+    private func finishMenuSession(_ record: FFActiveRecord) async {
+        defer { stopMenuTask(for: record.id) }
+        guard activeRecord(forFeatureID: record.featureID, game: record.game) != nil else {
+            setMenuDeadline(nil, for: record.id)
+            return
+        }
+        let operation = operationKey(featureID: record.featureID, game: record.game)
+        guard !busyIDs.contains(operation) else { return }
+        busyIDs.insert(operation)
+        defer { busyIDs.remove(operation) }
+        guard let token = FFAccessTokenStore.load(game: record.game, featureID: record.featureID) else { return }
+        do {
+            try await performRestore(record: record, accessToken: token)
+            setMenuDeadline(nil, for: record.id)
+        } catch {
+            // Keep the pending deadline. The next foreground launch retries restoration.
+        }
     }
 
     func reload() async {
@@ -961,12 +1106,52 @@ final class FreeFireFeatureViewModel: ObservableObject {
         )
         persistKeyAccessInfo()
 
-        _ = try await FFFeatureInstaller.install(
-            remoteURL: grant.downloadURL,
-            expectedSHA256: grant.downloadSHA256 ?? feature.activeSHA256,
-            game: game,
-            destinationPath: grant.destinationPath
-        )
+        let isMenu = feature.category?.lowercased() == FFFeatureCategory.aim.rawValue
+        let secondPath: String?
+        if isMenu {
+            guard let files = grant.files, files.count == 2,
+                  files[0].destinationPath == feature.destinationPath,
+                  files[1].destinationPath == feature.secondaryDestinationPath else {
+                throw FFFeatureError.invalidResponse
+            }
+            do {
+                for file in files {
+                    _ = try await FFFeatureInstaller.install(
+                        remoteURL: file.downloadURL,
+                        expectedSHA256: file.downloadSHA256,
+                        game: game,
+                        destinationPath: file.destinationPath,
+                        allowCreate: true
+                    )
+                }
+            } catch {
+                // If the second write fails, try to put both originals back before reporting failure.
+                if let token = FFAccessTokenStore.load(game: game, featureID: feature.id),
+                   let rollback = try? await FFAccessClient.restore(
+                    gameKey: game.rawValue, featureID: feature.id, accessToken: token
+                   ), let originals = rollback.files {
+                    for original in originals {
+                        _ = try? await FFFeatureInstaller.install(
+                            remoteURL: original.downloadURL,
+                            expectedSHA256: original.downloadSHA256,
+                            game: game,
+                            destinationPath: original.destinationPath,
+                            allowCreate: true
+                        )
+                    }
+                }
+                throw error
+            }
+            secondPath = files[1].destinationPath
+        } else {
+            _ = try await FFFeatureInstaller.install(
+                remoteURL: grant.downloadURL,
+                expectedSHA256: grant.downloadSHA256 ?? feature.activeSHA256,
+                game: game,
+                destinationPath: grant.destinationPath
+            )
+            secondPath = nil
+        }
 
         activeRecords.removeAll {
             $0.game == game &&
@@ -974,22 +1159,26 @@ final class FreeFireFeatureViewModel: ObservableObject {
             $0.featureID != feature.id
         }
         activeRecords.removeAll { $0.game == game && $0.featureID == feature.id }
-        activeRecords.append(FFActiveRecord(
+        let record = FFActiveRecord(
             game: game,
             featureID: feature.id,
             name: feature.name,
             destinationPath: grant.destinationPath,
+            secondaryDestinationPath: secondPath,
             originalSHA256: feature.originalSHA256
-        ))
+        )
+        activeRecords.append(record)
         persistActiveRecords()
-        notice = "Đã bật \(feature.name) thành công"
+        notice = isMenu ? "Đã cài hai file MENU. Đang mở game…" : "Đã bật \(feature.name) thành công"
+        if isMenu { launchMenuGame(for: record) }
     }
 
     private func restore(feature: FFRemoteFeature, game: FFGameKind) {
         let operation = operationKey(featureID: feature.id, game: game)
         guard !busyIDs.contains(operation) else { return }
         guard let record = activeRecord(forFeatureID: feature.id, game: game) else { return }
-        guard let token = FFAccessTokenStore.load(game: game, featureID: feature.id) else {
+        let token = FFAccessTokenStore.load(game: game, featureID: feature.id)
+        guard record.secondaryDestinationPath != nil || token != nil else {
             notice = "Không tìm thấy phiên khôi phục của chức năng này."
             return
         }
@@ -997,10 +1186,20 @@ final class FreeFireFeatureViewModel: ObservableObject {
         Task {
             defer { busyIDs.remove(operation) }
             do {
-                try await performRestore(record: record, accessToken: token)
+                if let second = record.secondaryDestinationPath {
+                    stopMenuTask(for: record.id)
+                    try await FFFeatureInstaller.delete(game: game, destinationPath: record.destinationPath)
+                    try await FFFeatureInstaller.delete(game: game, destinationPath: second)
+                    activeRecords.removeAll { $0.id == record.id }
+                    persistActiveRecords()
+                    setMenuDeadline(nil, for: record.id)
+                } else {
+                    try await performRestore(record: record, accessToken: token!)
+                }
                 notice = "Đã tắt \(feature.name) thành công"
             } catch {
                 notice = error.localizedDescription
+                if record.secondaryDestinationPath != nil { resumeMenuRestores() }
             }
         }
     }
@@ -1026,12 +1225,27 @@ final class FreeFireFeatureViewModel: ObservableObject {
 
     private func performRestore(record: FFActiveRecord, accessToken: String) async throws {
         let grant = try await FFAccessClient.restore(record: record, accessToken: accessToken)
-        _ = try await FFFeatureInstaller.install(
-            remoteURL: grant.downloadURL,
-            expectedSHA256: grant.downloadSHA256 ?? record.originalSHA256,
-            game: record.game,
-            destinationPath: grant.destinationPath
-        )
+        if let second = record.secondaryDestinationPath {
+            guard let files = grant.files, files.count == 2,
+                  files[0].destinationPath == record.destinationPath,
+                  files[1].destinationPath == second else { throw FFFeatureError.invalidResponse }
+            for file in files {
+                _ = try await FFFeatureInstaller.install(
+                    remoteURL: file.downloadURL,
+                    expectedSHA256: file.downloadSHA256,
+                    game: record.game,
+                    destinationPath: file.destinationPath,
+                    allowCreate: true
+                )
+            }
+        } else {
+            _ = try await FFFeatureInstaller.install(
+                remoteURL: grant.downloadURL,
+                expectedSHA256: grant.downloadSHA256 ?? record.originalSHA256,
+                game: record.game,
+                destinationPath: grant.destinationPath
+            )
+        }
         activeRecords.removeAll { $0.id == record.id }
         persistActiveRecords()
     }
@@ -1184,6 +1398,7 @@ struct FFGetKeySafariView: UIViewControllerRepresentable {
 struct FreeFireFeaturesView: View {
     let lockedGame: FFGameKind?
 
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model = FreeFireFeatureViewModel()
     @State private var showGetKey = false
     @State private var noticeDismissTask: Task<Void, Never>?
@@ -1244,6 +1459,10 @@ struct FreeFireFeaturesView: View {
             }
             model.loadIfNeeded()
             model.promptForGameKeyIfNeeded(lockedGame ?? model.selectedGame)
+            model.resumeMenuRestores()
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active { model.resumeMenuRestores() }
         }
         .onChange(of: model.notice) { newValue in
             noticeDismissTask?.cancel()
