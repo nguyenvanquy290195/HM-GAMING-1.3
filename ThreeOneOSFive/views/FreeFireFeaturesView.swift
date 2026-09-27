@@ -1125,7 +1125,7 @@ final class FreeFireFeatureViewModel: ObservableObject {
                     )
                 }
             } catch {
-                // If the second write fails, try to put both originals back before reporting failure.
+                // If the second write fails, restore the first file and remove the second.
                 if let token = FFAccessTokenStore.load(game: game, featureID: feature.id),
                    let rollback = try? await FFAccessClient.restore(
                     gameKey: game.rawValue, featureID: feature.id, accessToken: token
@@ -1139,6 +1139,7 @@ final class FreeFireFeatureViewModel: ObservableObject {
                             allowCreate: true
                         )
                     }
+                    _ = try? await FFFeatureInstaller.delete(game: game, destinationPath: files[1].destinationPath)
                 }
                 throw error
             }
@@ -1226,18 +1227,15 @@ final class FreeFireFeatureViewModel: ObservableObject {
     private func performRestore(record: FFActiveRecord, accessToken: String) async throws {
         let grant = try await FFAccessClient.restore(record: record, accessToken: accessToken)
         if let second = record.secondaryDestinationPath {
-            guard let files = grant.files, files.count == 2,
-                  files[0].destinationPath == record.destinationPath,
-                  files[1].destinationPath == second else { throw FFFeatureError.invalidResponse }
-            for file in files {
-                _ = try await FFFeatureInstaller.install(
-                    remoteURL: file.downloadURL,
-                    expectedSHA256: file.downloadSHA256,
-                    game: record.game,
-                    destinationPath: file.destinationPath,
-                    allowCreate: true
-                )
-            }
+            guard grant.destinationPath == record.destinationPath else { throw FFFeatureError.invalidResponse }
+            _ = try await FFFeatureInstaller.install(
+                remoteURL: grant.downloadURL,
+                expectedSHA256: grant.downloadSHA256 ?? record.originalSHA256,
+                game: record.game,
+                destinationPath: record.destinationPath,
+                allowCreate: true
+            )
+            try await FFFeatureInstaller.delete(game: record.game, destinationPath: second)
         } else {
             _ = try await FFFeatureInstaller.install(
                 remoteURL: grant.downloadURL,
