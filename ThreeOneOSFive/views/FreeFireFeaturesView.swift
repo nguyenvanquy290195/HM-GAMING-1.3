@@ -1204,16 +1204,16 @@ struct FreeFireFeaturesView: View {
         self.lockedGame = lockedGame
     }
 
-    private let accent = Color(red: 1.0, green: 0.72, blue: 0.05)
-    private let card = Color(red: 0.075, green: 0.075, blue: 0.082)
-    private let cardBorder = Color.white.opacity(0.085)
+    private let accent = Color(red: 0.96, green: 0.73, blue: 0.25)
+    private let card = Color(red: 0.09, green: 0.10, blue: 0.12)
+    private let cardBorder = Color.white.opacity(0.10)
 
     var body: some View {
         ZStack(alignment: .top) {
-            Color.black.ignoresSafeArea()
+            Color(red: 0.035, green: 0.04, blue: 0.055).ignoresSafeArea()
 
             ScrollView(showsIndicators: false) {
-                LazyVStack(spacing: 18) {
+                LazyVStack(spacing: 16) {
                     topHeader
                     heroBanner
                     if lockedGame == nil {
@@ -1226,9 +1226,9 @@ struct FreeFireFeaturesView: View {
                     mainContent
                     statusCard
                 }
-                .padding(.horizontal, 18)
-                .padding(.top, 12)
-                .padding(.bottom, 28)
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 38)
             }
             .refreshable { await model.reload() }
 
@@ -1319,51 +1319,35 @@ struct FreeFireFeaturesView: View {
     }
 
     private var topHeader: some View {
-        ZStack {
-            VStack(spacing: 0) {
-                HStack(spacing: 6) {
-                    Image(systemName: "crown.fill")
-                        .font(.system(size: 12, weight: .bold))
-                    Text("HM")
-                        .font(.system(size: 27, weight: .black, design: .rounded))
-                }
-                .foregroundStyle(accent)
-
-                Text("GAMING")
-                    .font(.system(size: 11, weight: .heavy, design: .rounded))
-                    .tracking(2.3)
-                    .foregroundStyle(Color.white.opacity(0.68))
+        HStack(spacing: 11) {
+            Image(systemName: "flame.fill")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(.black)
+                .frame(width: 42, height: 42)
+                .background(accent, in: RoundedRectangle(cornerRadius: 13))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.selectedGame.title)
+                    .font(.system(size: 17, weight: .heavy, design: .rounded))
+                    .foregroundStyle(.white)
+                Text("HM GAMING / FEATURE CENTER")
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(1.1)
+                    .foregroundStyle(Color.white.opacity(0.48))
             }
-
-            HStack {
-                Circle()
-                    .fill(card)
-                    .frame(width: 44, height: 44)
-                    .overlay {
-                        Image(systemName: "flame.fill")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(accent)
-                    }
-                    .overlay(Circle().stroke(cardBorder, lineWidth: 1))
-
-                Spacer()
-
-                Color.clear
-                    .frame(width: 44, height: 44)
-            }
+            Spacer(minLength: 0)
         }
-        .frame(height: 54)
+        .frame(height: 46)
     }
 
     private var heroBanner: some View {
         ZStack(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
                 .fill(
                     LinearGradient(
                         colors: [
-                            Color(red: 0.10, green: 0.085, blue: 0.035),
-                            Color(red: 0.055, green: 0.055, blue: 0.06),
-                            Color.black
+                            Color(red: 0.20, green: 0.15, blue: 0.07),
+                            card,
+                            Color(red: 0.07, green: 0.08, blue: 0.10)
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
@@ -1372,40 +1356,42 @@ struct FreeFireFeaturesView: View {
 
             GeometryReader { proxy in
                 Circle()
-                    .fill(accent.opacity(0.16))
+                    .fill(accent.opacity(0.18))
                     .frame(width: 180, height: 180)
-                    .blur(radius: 6)
+                    .blur(radius: 25)
                     .offset(x: proxy.size.width - 125, y: -48)
 
                 Image(systemName: "flame.fill")
-                    .font(.system(size: 104, weight: .black))
-                    .foregroundStyle(accent.opacity(0.86))
+                    .font(.system(size: 98, weight: .black))
+                    .foregroundStyle(accent.opacity(0.25))
                     .rotationEffect(.degrees(-8))
                     .offset(x: proxy.size.width - 110, y: 33)
             }
             .clipped()
 
-            VStack(alignment: .leading, spacing: 7) {
-                Text(model.selectedGame == .freeFire ? "FREE FIRE" : "FREE FIRE MAX")
-                    .font(.system(size: model.selectedGame == .freeFire ? 34 : 28, weight: .black, design: .rounded))
-                    .foregroundStyle(.white)
-
-                Text("SERVER FEATURE PANEL")
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .tracking(1.8)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("TRUNG TÂM CHỨC NĂNG")
+                    .font(.system(size: 10, weight: .heavy))
+                    .tracking(1.5)
                     .foregroundStyle(accent)
-
-                Text("Chọn AIM, AIM V2 hoặc ESP rồi bật chức năng bạn muốn sử dụng.")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.58))
-                    .frame(maxWidth: 230, alignment: .leading)
+                Text(model.selectedGame == .freeFire ? "FREE FIRE" : "FREE FIRE MAX")
+                    .font(.system(size: model.selectedGame == .freeFire ? 31 : 27, weight: .black, design: .rounded))
+                    .foregroundStyle(.white)
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(model.serverConfigurationError == nil && !model.remoteGames.isEmpty ? Color.green : Color.orange)
+                        .frame(width: 6, height: 6)
+                    Text(model.isLoading ? "Đang kết nối" : (model.serverConfigurationError == nil && !model.remoteGames.isEmpty ? "Đã tải chức năng" : "Chờ máy chủ"))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.72))
+                }
             }
-            .padding(22)
+            .padding(23)
         }
-        .frame(height: 174)
+        .frame(height: 157)
         .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(accent.opacity(0.24), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .stroke(accent.opacity(0.28), lineWidth: 1)
         )
     }
 
@@ -1464,7 +1450,7 @@ struct FreeFireFeaturesView: View {
     }
 
     private var categorySelector: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 7) {
             ForEach(FFFeatureCategory.allCases) { category in
                 let selected = model.selectedCategory == category
                 Button {
@@ -1472,15 +1458,15 @@ struct FreeFireFeaturesView: View {
                         model.selectedCategory = category
                     }
                 } label: {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 5) {
                         Image(systemName: category.icon)
-                            .font(.system(size: 14, weight: .bold))
+                            .font(.system(size: 12, weight: .bold))
                         Text(category.title)
-                            .font(.system(size: 13.5, weight: .heavy, design: .rounded))
+                            .font(.system(size: 12, weight: .heavy, design: .rounded))
                     }
                     .foregroundStyle(selected ? Color.black : Color.white.opacity(0.68))
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 11)
+                    .padding(.vertical, 13)
                     .background(
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
                             .fill(selected ? accent : card)
@@ -1497,7 +1483,7 @@ struct FreeFireFeaturesView: View {
 
     private var keyAccessCard: some View {
         let state = model.gameAccessStates[model.selectedGame.rawValue]
-        return HStack(spacing: 12) {
+        return HStack(spacing: 10) {
             Image(systemName: state == nil ? "key.fill" : "checkmark.shield.fill")
                 .font(.system(size: 17, weight: .bold))
                 .foregroundStyle(accent)
@@ -1518,18 +1504,18 @@ struct FreeFireFeaturesView: View {
                         .foregroundStyle(Color.white.opacity(0.48))
                 }
             }
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
             Button(state == nil ? "NHẬP KEY" : "ĐỔI KEY") { model.promptForGameKey(model.selectedGame) }
                 .font(.system(size: 11.5, weight: .heavy))
                 .foregroundStyle(.black)
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 10)
                 .frame(height: 34)
                 .background(accent, in: Capsule())
                 .buttonStyle(.plain)
         }
         .padding(14)
-        .background(card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(cardBorder, lineWidth: 1))
+        .background(card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(cardBorder, lineWidth: 1))
     }
 
     private var getKeyButton: some View {
@@ -1557,7 +1543,7 @@ struct FreeFireFeaturesView: View {
             .padding(.horizontal, 16)
             .frame(maxWidth: .infinity)
             .frame(height: 54)
-            .background(accent, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(accent, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .shadow(color: accent.opacity(0.18), radius: 12, y: 4)
         }
         .buttonStyle(.plain)
@@ -1576,8 +1562,8 @@ struct FreeFireFeaturesView: View {
         HStack(spacing: 9) {
             Image(systemName: "bolt.fill")
                 .foregroundStyle(accent)
-            Text("CHỨC NĂNG")
-                .font(.system(size: 17, weight: .heavy, design: .rounded))
+            Text("Chức năng \(model.selectedCategory.title)")
+                .font(.system(size: 18, weight: .heavy, design: .rounded))
                 .foregroundStyle(.white)
 
             Spacer()
@@ -1689,7 +1675,7 @@ struct FreeFireFeaturesView: View {
             featureIcon(systemName: presentation.icon, active: isActive)
 
             VStack(alignment: .leading, spacing: 5) {
-                Text(feature.name.uppercased())
+                Text(feature.name)
                     .font(.system(size: 15, weight: .heavy, design: .rounded))
                     .foregroundStyle(.white)
                     .lineLimit(1)
@@ -1733,16 +1719,16 @@ struct FreeFireFeaturesView: View {
                     set: { model.setFeature(feature, enabled: $0) }
                 ))
                 .labelsHidden()
-                .tint(accent)
+                .tint(Color.green)
                 .disabled(!feature.enabled && !isActive)
             }
         }
         .padding(.horizontal, 15)
         .padding(.vertical, 14)
-        .background(card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(isActive ? Color(red: 0.10, green: 0.13, blue: 0.12) : card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(isActive ? accent.opacity(0.35) : cardBorder, lineWidth: 1)
+                .stroke(isActive ? Color.green.opacity(0.40) : cardBorder, lineWidth: 1)
         )
     }
 

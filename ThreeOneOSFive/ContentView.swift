@@ -111,23 +111,23 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var showLogs = false
 
-    private let accent = Color(red: 1.0, green: 0.72, blue: 0.05)
-    private let card = Color(red: 0.075, green: 0.075, blue: 0.082)
-    private let cardBorder = Color.white.opacity(0.085)
+    private let accent = Color(red: 0.96, green: 0.73, blue: 0.25)
+    private let card = Color(red: 0.09, green: 0.10, blue: 0.12)
+    private let cardBorder = Color.white.opacity(0.10)
 
     var body: some View {
         NavigationStack(path: $path) {
             ZStack {
-                Color.black.ignoresSafeArea()
+                Color(red: 0.035, green: 0.04, blue: 0.055).ignoresSafeArea()
                 ScrollView(showsIndicators: false) {
-                    VStack(spacing: 22) {
+                    VStack(alignment: .leading, spacing: 24) {
                         header
                         hero
                         appSection
                     }
-                    .padding(.horizontal, 18)
-                    .padding(.top, 14)
-                    .padding(.bottom, 34)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+                    .padding(.bottom, 40)
                 }
                 .refreshable { await appsModel.reload() }
             }
@@ -189,23 +189,26 @@ struct ContentView: View {
     }
 
     private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Image(systemName: "crown.fill").font(.system(size: 12, weight: .bold))
-                    Text("HM").font(.system(size: 28, weight: .black, design: .rounded))
-                }
-                .foregroundStyle(accent)
-                Text("GAMING")
-                    .font(.system(size: 11, weight: .heavy, design: .rounded))
-                    .tracking(2.4)
-                    .foregroundStyle(Color.white.opacity(0.62))
+        HStack(spacing: 12) {
+            Text("HM")
+                .font(.system(size: 18, weight: .black, design: .rounded))
+                .foregroundStyle(Color.black)
+                .frame(width: 42, height: 42)
+                .background(accent, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("HM GAMING")
+                    .font(.system(size: 17, weight: .black, design: .rounded))
+                    .foregroundStyle(.white)
+                Text("GAME CENTER")
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(2)
+                    .foregroundStyle(accent)
             }
             Spacer()
             Button { Task { await appsModel.reload() } } label: {
                 Circle()
                     .fill(card)
-                    .frame(width: 44, height: 44)
+                    .frame(width: 42, height: 42)
                     .overlay {
                         if appsModel.isLoading {
                             ProgressView().tint(accent).scaleEffect(0.8)
@@ -218,105 +221,132 @@ struct ContentView: View {
                     .overlay(Circle().stroke(cardBorder, lineWidth: 1))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Làm mới danh sách trò chơi")
         }
-        .frame(height: 54)
+        .frame(height: 48)
     }
 
     private var hero: some View {
         ZStack(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(LinearGradient(colors: [Color(red: 0.10, green: 0.085, blue: 0.035), Color(red: 0.055, green: 0.055, blue: 0.06), .black], startPoint: .topLeading, endPoint: .bottomTrailing))
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .fill(LinearGradient(colors: [Color(red: 0.18, green: 0.14, blue: 0.07), card, Color(red: 0.07, green: 0.08, blue: 0.10)], startPoint: .topLeading, endPoint: .bottomTrailing))
             GeometryReader { proxy in
-                Circle().fill(accent.opacity(0.15)).frame(width: 190, height: 190).blur(radius: 8).offset(x: proxy.size.width - 130, y: -58)
+                Circle().fill(accent.opacity(0.16)).frame(width: 195, height: 195).blur(radius: 30).offset(x: proxy.size.width - 135, y: -45)
                 Image(systemName: "gamecontroller.fill")
-                    .font(.system(size: 92, weight: .black))
-                    .foregroundStyle(accent.opacity(0.80))
-                    .rotationEffect(.degrees(-8))
-                    .offset(x: proxy.size.width - 122, y: 50)
+                    .font(.system(size: 100, weight: .black))
+                    .foregroundStyle(accent.opacity(0.24))
+                    .rotationEffect(.degrees(-16))
+                    .offset(x: proxy.size.width - 115, y: 44)
             }
             .clipped()
-            VStack(alignment: .leading, spacing: 7) {
-                Text("ỨNG DỤNG").font(.system(size: 31, weight: .black, design: .rounded)).foregroundStyle(.white)
-                Text("HM GAME CENTER").font(.system(size: 11, weight: .bold, design: .rounded)).tracking(1.8).foregroundStyle(accent)
-                Text("Các ô bên dưới được đồng bộ trực tiếp từ Admin.")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.58))
-                    .frame(maxWidth: 220, alignment: .leading)
+            VStack(alignment: .leading, spacing: 10) {
+                Text("KHÔNG GIAN CỦA BẠN")
+                    .font(.system(size: 10, weight: .heavy))
+                    .tracking(1.8)
+                    .foregroundStyle(accent)
+                Text("Sẵn sàng\nchơi game?")
+                    .font(.system(size: 30, weight: .black, design: .rounded))
+                    .lineSpacing(-3)
+                    .foregroundStyle(.white)
+                Text("Chọn trò chơi để xem chức năng.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.63))
             }
-            .padding(22)
+            .padding(24)
         }
-        .frame(height: 168)
-        .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(accent.opacity(0.24), lineWidth: 1))
+        .frame(height: 188)
+        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).stroke(accent.opacity(0.27), lineWidth: 1))
     }
 
     private var appSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("ỨNG DỤNG TRÊN MÁY")
-                    .font(.system(size: 16, weight: .heavy, design: .rounded))
+                Text("Trò chơi")
+                    .font(.system(size: 21, weight: .heavy, design: .rounded))
                     .foregroundStyle(.white)
                 Spacer()
-                Text("\(appsModel.games.count) ứng dụng")
+                Text("\(appsModel.games.count) trò chơi")
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(Color.white.opacity(0.42))
             }
-
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 18)], spacing: 22) {
-                ForEach(appsModel.games) { game in appIcon(game) }
-                patchIcon
+            if let error = appsModel.errorMessage {
+                Text("Không thể cập nhật danh sách: \(error)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.white.opacity(0.55))
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            ForEach(appsModel.games) { game in appCard(game) }
+
+            Text("CÔNG CỤ")
+                .font(.system(size: 11, weight: .heavy))
+                .tracking(1.6)
+                .foregroundStyle(Color.white.opacity(0.48))
+                .padding(.top, 14)
+            patchCard
         }
     }
 
-    private func appIcon(_ game: HMOnlineGame) -> some View {
+    private func appCard(_ game: HMOnlineGame) -> some View {
         Button { path.append(.game(game)) } label: {
-            VStack(spacing: 9) {
+            HStack(spacing: 15) {
                 AsyncImage(url: URL(string: game.iconURL)) { phase in
                     switch phase {
                     case .success(let image):
                         image.resizable().scaledToFill()
                     default:
                         ZStack {
-                            LinearGradient(colors: [accent.opacity(0.28), Color.white.opacity(0.06)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                            LinearGradient(colors: [accent.opacity(0.30), card], startPoint: .topLeading, endPoint: .bottomTrailing)
                             Image(systemName: "gamecontroller.fill")
-                                .font(.system(size: 30, weight: .bold))
+                                .font(.system(size: 24, weight: .bold))
                                 .foregroundStyle(accent)
                         }
                     }
                 }
-                .frame(width: 84, height: 84)
-                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Color.white.opacity(0.10), lineWidth: 1))
-                .shadow(color: .black.opacity(0.35), radius: 12, y: 6)
+                .frame(width: 62, height: 62)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
-                Text(game.name)
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .frame(maxWidth: 100)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(game.name)
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Text("Xem chức năng")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(0.48))
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(accent)
+                    .frame(width: 32, height: 32)
+                    .background(accent.opacity(0.12), in: Circle())
             }
+            .padding(14)
+            .background(card, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(cardBorder, lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
 
-    private var patchIcon: some View {
+    private var patchCard: some View {
         Button { path.append(.patch) } label: {
-            VStack(spacing: 9) {
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(LinearGradient(colors: [accent.opacity(0.26), Color.white.opacity(0.05)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 84, height: 84)
-                    .overlay {
-                        Image(systemName: "shippingbox.fill")
-                            .font(.system(size: 31, weight: .bold))
-                            .foregroundStyle(accent)
-                    }
-                    .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Color.white.opacity(0.10), lineWidth: 1))
-                    .shadow(color: .black.opacity(0.35), radius: 12, y: 6)
+            HStack(spacing: 14) {
+                Image(systemName: "shippingbox.fill")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundStyle(accent)
+                    .frame(width: 46, height: 46)
+                    .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))
                 Text("Patch")
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(Color.white.opacity(0.40))
             }
+            .padding(13)
+            .background(card, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(cardBorder, lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
@@ -1299,4 +1329,3 @@ struct HMOnlineGameKeyEntrySheet: View {
         .presentationDetents([.medium])
     }
 }
-
