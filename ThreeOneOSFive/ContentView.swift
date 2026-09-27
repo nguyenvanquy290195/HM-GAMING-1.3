@@ -969,21 +969,6 @@ final class HMOnlineGameFeatureViewModel: ObservableObject {
     }
 
 
-    func keyStatusText(_ feature: FFRemoteFeature) -> String? {
-        guard let info = keyAccessInfo[operationKey(feature.id)] else { return nil }
-        let device = "\(info.deviceCount)/\(info.maxDevices) thiết bị"
-        guard !info.expiresAt.isEmpty else { return "Key: Vô hạn • \(device)" }
-        let fmt = ISO8601DateFormatter()
-        guard let expiry = fmt.date(from: info.expiresAt) else { return "Key còn hạn • \(device)" }
-        let remaining = expiry.timeIntervalSinceNow
-        guard remaining > 0 else { return "Key đã hết hạn" }
-        let mins = Int(remaining / 60)
-        let days = mins / 1440
-        let hours = (mins % 1440) / 60
-        let time = days > 0 ? "\(days) ngày \(hours) giờ" : (hours > 0 ? "\(hours) giờ" : "\(max(1, mins)) phút")
-        return "Còn hạn: \(time) • \(device)"
-    }
-
     private func operationKey(_ featureID: String) -> String { "\(game.id):\(featureID)" }
 
     private func persistActiveRecords() {
@@ -1150,7 +1135,12 @@ struct HMOnlineGameFeaturesView: View {
                     .font(.system(size: 12.5, weight: .heavy, design: .rounded))
                     .foregroundStyle(.white)
                 if let state {
-                    Text("Được dùng \(state.allowedFeatureIDs.count) chức năng • \(state.deviceCount)/\(state.maxDevices) thiết bị")
+                    TimelineView(.periodic(from: .now, by: 60)) { timeline in
+                        Text(state.remainingText(at: timeline.date))
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(state.remainingText(at: timeline.date) == "Key đã hết hạn" ? Color.red : accent)
+                    }
+                    Text("\(state.allowedFeatureIDs.count) chức năng • \(state.deviceCount)/\(state.maxDevices) thiết bị")
                         .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(Color.white.opacity(0.48))
                 } else {
@@ -1233,7 +1223,7 @@ struct HMOnlineGameFeaturesView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(feature.name.uppercased()).font(.system(size: 14.5, weight: .heavy, design: .rounded)).foregroundStyle(.white).lineLimit(1)
                 let authorized = model.isFeatureAuthorized(feature)
-                Text(!authorized && !active ? "Key hiện tại không cấp quyền" : (model.keyStatusText(feature) ?? (active ? "Đang kích hoạt" : "Chạm công tắc để bật")))
+                Text(!authorized && !active ? "Key hiện tại không cấp quyền" : (active ? "Đang kích hoạt" : "Chạm công tắc để bật"))
                     .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(!authorized && !active ? Color.white.opacity(0.35) : (active ? accent : Color.white.opacity(0.47)))
                     .lineLimit(1)

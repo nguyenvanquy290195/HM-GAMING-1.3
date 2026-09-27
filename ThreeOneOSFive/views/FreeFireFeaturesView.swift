@@ -176,6 +176,31 @@ struct FFGameAccessState: Codable, Hashable {
     let maxDevices: Int
     let deviceCount: Int
     let scope: String
+
+    func remainingText(at date: Date) -> String {
+        let raw = expiresAt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return "Thời hạn: Vô hạn" }
+
+        let formatter = ISO8601DateFormatter()
+        let expiry: Date?
+        if let parsed = formatter.date(from: raw) {
+            expiry = parsed
+        } else {
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            expiry = formatter.date(from: raw)
+        }
+        guard let expiry else { return "Thời hạn chưa rõ" }
+
+        let remaining = expiry.timeIntervalSince(date)
+        guard remaining > 0 else { return "Key đã hết hạn" }
+        let minutes = max(1, Int(ceil(remaining / 60)))
+        let days = minutes / 1440
+        let hours = (minutes % 1440) / 60
+        let mins = minutes % 60
+        if days > 0 { return "Còn hạn: \(days) ngày \(hours) giờ" }
+        if hours > 0 { return "Còn hạn: \(hours) giờ \(mins) phút" }
+        return "Còn hạn: \(minutes) phút"
+    }
 }
 
 enum FFGameAccessStore {
@@ -1025,43 +1050,6 @@ final class FreeFireFeatureViewModel: ObservableObject {
         return url
     }
 
-    func keyStatusText(for feature: FFRemoteFeature, game: FFGameKind? = nil) -> String? {
-        let resolvedGame = game ?? selectedGame
-        let key = operationKey(featureID: feature.id, game: resolvedGame)
-        guard let info = keyAccessInfo[key] else { return nil }
-
-        let deviceText = "\(info.deviceCount)/\(info.maxDevices) thiết bị"
-        let rawExpiry = info.expiresAt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !rawExpiry.isEmpty else {
-            return "Key: Vô hạn • \(deviceText)"
-        }
-
-        let formatter = ISO8601DateFormatter()
-        guard let expiry = formatter.date(from: rawExpiry) else {
-            return "Key còn hạn • \(deviceText)"
-        }
-
-        let remaining = expiry.timeIntervalSinceNow
-        guard remaining > 0 else {
-            return "Key đã hết hạn"
-        }
-
-        let totalMinutes = Int(remaining / 60)
-        let days = totalMinutes / (24 * 60)
-        let hours = (totalMinutes % (24 * 60)) / 60
-        let minutes = totalMinutes % 60
-
-        let timeText: String
-        if days > 0 {
-            timeText = hours > 0 ? "\(days) ngày \(hours) giờ" : "\(days) ngày"
-        } else if hours > 0 {
-            timeText = minutes > 0 ? "\(hours) giờ \(minutes) phút" : "\(hours) giờ"
-        } else {
-            timeText = "\(max(1, minutes)) phút"
-        }
-        return "Còn hạn: \(timeText) • \(deviceText)"
-    }
-
     private func persistKeyAccessInfo() {
         guard let data = try? JSONEncoder().encode(keyAccessInfo) else { return }
         UserDefaults.standard.set(data, forKey: Self.keyAccessInfoKey)
@@ -1495,7 +1483,12 @@ struct FreeFireFeaturesView: View {
                     .font(.system(size: 12.5, weight: .heavy, design: .rounded))
                     .foregroundStyle(.white)
                 if let state {
-                    Text("Được dùng \(state.allowedFeatureIDs.count) chức năng • \(state.deviceCount)/\(state.maxDevices) thiết bị")
+                    TimelineView(.periodic(from: .now, by: 60)) { timeline in
+                        Text(state.remainingText(at: timeline.date))
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(state.remainingText(at: timeline.date) == "Key đã hết hạn" ? Color.red : accent)
+                    }
+                    Text("\(state.allowedFeatureIDs.count) chức năng • \(state.deviceCount)/\(state.maxDevices) thiết bị")
                         .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(Color.white.opacity(0.48))
                 } else {
@@ -1681,13 +1674,12 @@ struct FreeFireFeaturesView: View {
                     .lineLimit(1)
 
                 let authorized = model.isFeatureAuthorized(feature)
-                let keyStatus = model.keyStatusText(for: feature)
-                Text(!authorized && !isActive ? "Key hiện tại không cấp quyền" : (keyStatus ?? (isActive ? "Đang kích hoạt" : presentation.subtitle)))
+                Text(!authorized && !isActive ? "Key hiện tại không cấp quyền" : (isActive ? "Đang kích hoạt" : presentation.subtitle))
                     .font(.system(size: 12.5, weight: .semibold))
                     .foregroundStyle(
                         !authorized && !isActive
                         ? Color.white.opacity(0.38)
-                        : (keyStatus == "Key đã hết hạn" ? Color.red.opacity(0.88) : (keyStatus != nil ? accent : (isActive ? accent : Color.white.opacity(0.48))))
+                        : (isActive ? Color.green : Color.white.opacity(0.48))
                     )
                     .lineLimit(1)
 
