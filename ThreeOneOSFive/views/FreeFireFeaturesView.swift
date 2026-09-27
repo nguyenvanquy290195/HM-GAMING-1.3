@@ -1,0 +1,1845 @@
+import SwiftUI
+import Foundation
+import CryptoKit
+import Security
+import UIKit
+import SafariServices
+
+// MARK: - Fixed game scope
+
+enum FFGameKind: String, CaseIterable, Identifiable, Codable {
+    case freeFire = "freefire"
+    case freeFireMax = "freefiremax"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .freeFire: return "Free Fire"
+        case .freeFireMax: return "Free Fire MAX"
+        }
+    }
+
+    // The remote server is intentionally not allowed to choose a bundle ID.
+    // This module can only write inside these two app containers.
+    var bundleID: String {
+        switch self {
+        case .freeFire: return "com.dts.freefireth"
+        case .freeFireMax: return "com.dts.freefiremax"
+        }
+    }
+}
+
+enum FFFeatureCategory: String, CaseIterable, Identifiable, Codable {
+    case aim
+    case aimV2 = "aimv2"
+    case esp
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .aim: return "AIM"
+        case .aimV2: return "AIM V2"
+        case .esp: return "ESP"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .aim: return "scope"
+        case .aimV2: return "scope"
+        case .esp: return "eye.fill"
+        }
+    }
+}
+
+struct FFRemoteResponse: Decodable {
+    let version: Int?
+    let games: [String: FFRemoteGame]
+}
+
+struct FFRemoteGame: Decodable {
+    let name: String?
+    let bundleID: String?
+    let iconURL: String?
+    let sortOrder: Int?
+    let system: Bool?
+    let features: [FFRemoteFeature]
+
+    enum CodingKeys: String, CodingKey {
+        case name, features, system
+        case bundleID = "bundle_id"
+        case iconURL = "icon_url"
+        case sortOrder = "sort_order"
+    }
+}
+
+struct FFRemoteFeature: Decodable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let category: String?
+    let note: String?
+    let enabled: Bool
+    let destinationPath: String
+    let activeSHA256: String?
+    let originalSHA256: String?
+    let requiresKey: Bool?
+    let updatedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, category, note, enabled
+        case destinationPath = "destination_path"
+        case activeSHA256 = "active_sha256"
+        case originalSHA256 = "original_sha256"
+        case requiresKey = "requires_key"
+        case updatedAt = "updated_at"
+    }
+}
+
+struct FFActiveRecord: Codable, Identifiable, Hashable {
+    let game: FFGameKind
+    let featureID: String
+    let name: String
+    let destinationPath: String
+    let originalSHA256: String?
+
+    var id: String { "\(game.rawValue):\(featureID)" }
+}
+
+struct FFAccessGrant: Decodable {
+    let ok: Bool
+    let accessToken: String?
+    let downloadURL: String
+    let downloadSHA256: String?
+    let expiresIn: Int?
+    let destinationPath: String
+    let keyExpiresAt: String?
+    let maxDevices: Int?
+    let deviceCount: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case accessToken = "access_token"
+        case downloadURL = "download_url"
+        case downloadSHA256 = "download_sha256"
+        case expiresIn = "expires_in"
+        case destinationPath = "destination_path"
+        case keyExpiresAt = "key_expires_at"
+        case maxDevices = "max_devices"
+        case deviceCount = "device_count"
+    }
+}
+
+struct FFSessionAuthorizationStatus: Decodable {
+    let ok: Bool
+    let authorized: Bool
+    let reason: String?
+    let keyExpiresAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, authorized, reason
+        case keyExpiresAt = "key_expires_at"
+    }
+}
+
+struct FFKeyAccessInfo: Codable, Hashable {
+    let expiresAt: String
+    let maxDevices: Int
+    let deviceCount: Int
+}
+
+struct FFGameLoginGrant: Decodable {
+    let ok: Bool
+    let game: String
+    let allowedFeatures: [String]
+    let accessTokens: [String: String]
+    let keyExpiresAt: String?
+    let maxDevices: Int?
+    let deviceCount: Int?
+    let keyScope: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, game
+        case allowedFeatures = "allowed_features"
+        case accessTokens = "access_tokens"
+        case keyExpiresAt = "key_expires_at"
+        case maxDevices = "max_devices"
+        case deviceCount = "device_count"
+        case keyScope = "key_scope"
+    }
+}
+
+struct FFGameAccessState: Codable, Hashable {
+    let allowedFeatureIDs: [String]
+    let expiresAt: String
+    let maxDevices: Int
+    let deviceCount: Int
+    let scope: String
+}
+
+enum FFGameAccessStore {
+    private static let storageKey = "hmGaming.gameKeyAccess.v1"
+
+    static func loadAll() -> [String: FFGameAccessState] {
+        guard let data = UserDefaults.standard.data(forKey: storageKey),
+              let states = try? JSONDecoder().decode([String: FFGameAccessState].self, from: data) else { return [:] }
+        return states
+    }
+
+    static func saveAll(_ states: [String: FFGameAccessState]) {
+        guard let data = try? JSONEncoder().encode(states) else { return }
+        UserDefaults.standard.set(data, forKey: storageKey)
+    }
+}
+
+struct FFGameKeyPrompt: Identifiable, Hashable {
+    let gameKey: String
+    let gameName: String
+    var id: String { gameKey }
+}
+
+struct FFServerErrorPayload: Decodable {
+    let ok: Bool?
+    let code: String?
+    let message: String?
+}
+
+// MARK: - Errors / installer
+
+enum FFFeatureError: Error, LocalizedError {
+    case serverNotConfigured
+    case invalidServerURL
+    case invalidResponse
+    case serverStatus(Int)
+    case serverMessage(String)
+    case invalidDownloadURL
+    case downloadFailed
+    case checksumMismatch
+    case containerUnavailable(String)
+    case invalidDestinationPath
+    case targetMissing(String)
+    case targetIsDirectory
+    case symbolicLinkUnsupported
+    case installFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .serverNotConfigured:
+            return "Chưa cấu hình địa chỉ API của máy chủ."
+        case .invalidServerURL:
+            return "Địa chỉ máy chủ không hợp lệ. Hãy dùng URL HTTPS trỏ tới api.php."
+        case .invalidResponse:
+            return "Máy chủ trả về dữ liệu không hợp lệ."
+        case .serverStatus(let code):
+            return "Máy chủ trả về lỗi HTTP \(code)."
+        case .serverMessage(let message):
+            return message
+        case .invalidDownloadURL:
+            return "URL file trên máy chủ không hợp lệ hoặc không dùng HTTPS."
+        case .downloadFailed:
+            return "Không thể tải file từ máy chủ."
+        case .checksumMismatch:
+            return "File tải xuống không khớp SHA-256. Đã hủy cài đặt."
+        case .containerUnavailable(let bundleID):
+            return "Không truy cập được data của \(bundleID). Hãy kiểm tra quyền truy cập của HM GAMING."
+        case .invalidDestinationPath:
+            return "Đường dẫn đích không hợp lệ. Đường dẫn phải tương đối bên trong data game."
+        case .targetMissing(let path):
+            return "Không tìm thấy file đích: \(path)"
+        case .targetIsDirectory:
+            return "Đường dẫn đích đang trỏ tới một thư mục, không phải file."
+        case .symbolicLinkUnsupported:
+            return "Không hỗ trợ đường dẫn có symbolic link."
+        case .installFailed:
+            return "Không thể thay file vào data game."
+        }
+    }
+}
+
+enum FFFeatureInstaller {
+    private static let hashChunkSize = 1_024 * 1_024
+
+    static func install(
+        remoteURL: String,
+        expectedSHA256: String?,
+        game: FFGameKind,
+        destinationPath: String
+    ) async throws -> Int64 {
+        try await install(
+            remoteURL: remoteURL,
+            expectedSHA256: expectedSHA256,
+            bundleID: game.bundleID,
+            destinationPath: destinationPath
+        )
+    }
+
+    static func install(
+        remoteURL: String,
+        expectedSHA256: String?,
+        bundleID: String,
+        destinationPath: String
+    ) async throws -> Int64 {
+        guard let url = URL(string: remoteURL),
+              url.scheme?.lowercased() == "https",
+              url.host != nil else {
+            throw FFFeatureError.invalidDownloadURL
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 60
+        configuration.timeoutIntervalForResource = 300
+        let session = URLSession(configuration: configuration)
+
+        let downloadedURL: URL
+        do {
+            let (tempURL, response) = try await session.download(from: url)
+            guard let http = response as? HTTPURLResponse else {
+                throw FFFeatureError.invalidResponse
+            }
+            guard (200...299).contains(http.statusCode) else {
+                throw FFFeatureError.serverStatus(http.statusCode)
+            }
+            downloadedURL = tempURL
+        } catch let error as FFFeatureError {
+            throw error
+        } catch {
+            throw FFFeatureError.downloadFailed
+        }
+
+        if let expectedSHA256,
+           !expectedSHA256.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let actual = try sha256(of: downloadedURL)
+            guard actual.caseInsensitiveCompare(expectedSHA256) == .orderedSame else {
+                throw FFFeatureError.checksumMismatch
+            }
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    guard let containerPath = ContainerStore.resolveAppContainerPath(bundleID: bundleID) else {
+                        throw FFFeatureError.containerUnavailable(bundleID)
+                    }
+
+                    // Mirror the Files tab access grant before attempting a write.
+                    var activationError: NSString?
+                    let mcmHandle = MCMActivateContainer(2, bundleID, false, &activationError)
+                    if mcmHandle < 0 {
+                        _ = ContainerStore.grantContainerAccess(containerPath)
+                    }
+
+                    let targetURL = try validatedTargetURL(
+                        containerPath: containerPath,
+                        relativePath: destinationPath
+                    )
+
+                    let result = try FileReplacementService.replace(
+                        target: targetURL,
+                        with: downloadedURL
+                    )
+                    continuation.resume(returning: result.byteCount)
+                } catch let error as FFFeatureError {
+                    continuation.resume(throwing: error)
+                } catch let error as FileReplacementError {
+                    switch error {
+                    case .targetMissing:
+                        continuation.resume(throwing: FFFeatureError.targetMissing(destinationPath))
+                    case .targetIsDirectory:
+                        continuation.resume(throwing: FFFeatureError.targetIsDirectory)
+                    case .symbolicLinkUnsupported:
+                        continuation.resume(throwing: FFFeatureError.symbolicLinkUnsupported)
+                    default:
+                        continuation.resume(throwing: FFFeatureError.installFailed)
+                    }
+                } catch {
+                    continuation.resume(throwing: FFFeatureError.installFailed)
+                }
+            }
+        }
+    }
+
+    private static func validatedTargetURL(
+        containerPath: String,
+        relativePath rawPath: String,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        let relativePath = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !relativePath.isEmpty,
+              relativePath.count <= 2_048,
+              !relativePath.hasPrefix("/"),
+              !relativePath.contains("\\") else {
+            throw FFFeatureError.invalidDestinationPath
+        }
+
+        let components = relativePath.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard !components.isEmpty,
+              components.count <= 128,
+              !components.contains("."),
+              !components.contains("..") else {
+            throw FFFeatureError.invalidDestinationPath
+        }
+
+        let rootURL = URL(fileURLWithPath: containerPath, isDirectory: true).standardizedFileURL
+        let targetURL = rootURL.appendingPathComponent(relativePath, isDirectory: false).standardizedFileURL
+        let rootPrefix = rootURL.path.hasSuffix("/") ? rootURL.path : rootURL.path + "/"
+        guard targetURL.path.hasPrefix(rootPrefix) else {
+            throw FFFeatureError.invalidDestinationPath
+        }
+
+        // Reject any existing symlink component so a server path cannot escape the game container.
+        var cursor = rootURL
+        for component in components {
+            cursor.appendPathComponent(component)
+            if fileManager.fileExists(atPath: cursor.path) {
+                let values = try cursor.resourceValues(forKeys: [.isSymbolicLinkKey])
+                if values.isSymbolicLink == true {
+                    throw FFFeatureError.symbolicLinkUnsupported
+                }
+            }
+        }
+
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: targetURL.path, isDirectory: &isDirectory) else {
+            throw FFFeatureError.targetMissing(relativePath)
+        }
+        guard !isDirectory.boolValue else {
+            throw FFFeatureError.targetIsDirectory
+        }
+        return targetURL
+    }
+
+    private static func sha256(of url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let data = try handle.read(upToCount: hashChunkSize), !data.isEmpty {
+            hasher.update(data: data)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+// MARK: - Secure feature access
+
+struct FFServerAccessError: Error, LocalizedError {
+    let code: String
+    let message: String
+    var errorDescription: String? { message }
+
+    var shouldAskForKey: Bool {
+        ["key_required", "invalid_key", "key_disabled", "key_expired", "device_limit", "invalid_session"].contains(code)
+    }
+}
+
+enum FFAccessTokenStore {
+    private static let service = "com.apple.mobile.MobileHouseArrest.ff-feature-access"
+
+    private static func account(gameKey: String, featureID: String) -> String {
+        "\(gameKey):\(featureID)"
+    }
+
+    private static func account(game: FFGameKind, featureID: String) -> String {
+        account(gameKey: game.rawValue, featureID: featureID)
+    }
+
+    static func store(_ token: String, gameKey: String, featureID: String) {
+        guard let data = token.data(using: .utf8), !data.isEmpty else { return }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account(gameKey: gameKey, featureID: featureID)
+        ]
+        let attrs: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        let status = SecItemUpdate(query as CFDictionary, attrs as CFDictionary)
+        if status == errSecSuccess { return }
+        if status == errSecItemNotFound {
+            var item = query
+            attrs.forEach { item[$0.key] = $0.value }
+            _ = SecItemAdd(item as CFDictionary, nil)
+        }
+    }
+
+    static func store(_ token: String, game: FFGameKind, featureID: String) {
+        store(token, gameKey: game.rawValue, featureID: featureID)
+    }
+
+    static func load(gameKey: String, featureID: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account(gameKey: gameKey, featureID: featureID),
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func load(game: FFGameKind, featureID: String) -> String? {
+        load(gameKey: game.rawValue, featureID: featureID)
+    }
+
+    static func delete(gameKey: String, featureID: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account(gameKey: gameKey, featureID: featureID)
+        ]
+        _ = SecItemDelete(query as CFDictionary)
+    }
+
+    static func delete(game: FFGameKind, featureID: String) {
+        delete(gameKey: game.rawValue, featureID: featureID)
+    }
+
+    private static let gameSessionFeatureID = "__GAME_SESSION__"
+
+    static func storeGameSession(_ token: String, gameKey: String) {
+        store(token, gameKey: gameKey, featureID: gameSessionFeatureID)
+    }
+
+    static func storeGameSession(_ token: String, game: FFGameKind) {
+        storeGameSession(token, gameKey: game.rawValue)
+    }
+
+    static func loadGameSession(gameKey: String) -> String? {
+        load(gameKey: gameKey, featureID: gameSessionFeatureID)
+    }
+
+    static func loadGameSession(game: FFGameKind) -> String? {
+        loadGameSession(gameKey: game.rawValue)
+    }
+
+    static func deleteGameSession(gameKey: String) {
+        delete(gameKey: gameKey, featureID: gameSessionFeatureID)
+    }
+
+    static func deleteGameSession(game: FFGameKind) {
+        deleteGameSession(gameKey: game.rawValue)
+    }
+}
+
+enum FFDeviceIdentity {
+    private static let fallbackKey = "hmGaming.ffDeviceID.v1"
+
+    static var value: String {
+        if let id = UIDevice.current.identifierForVendor?.uuidString, !id.isEmpty {
+            return id
+        }
+        if let existing = UserDefaults.standard.string(forKey: fallbackKey), !existing.isEmpty {
+            return existing
+        }
+        let generated = UUID().uuidString
+        UserDefaults.standard.set(generated, forKey: fallbackKey)
+        return generated
+    }
+}
+
+enum FFAccessClient {
+    private static let accessURL = "https://miniapp.shopaccvt.site/proxy/access.php"
+
+    static func login(gameKey: String, key: String) async throws -> FFGameLoginGrant {
+        guard let url = URL(string: accessURL) else { throw FFFeatureError.invalidServerURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "action": "game_login",
+            "game": gameKey,
+            "key": key,
+            "device_id": FFDeviceIdentity.value,
+            "build_id": HMBuildIdentity.id
+        ])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw FFFeatureError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            if let payload = try? JSONDecoder().decode(FFServerErrorPayload.self, from: data) {
+                throw FFServerAccessError(code: payload.code ?? "server_error", message: payload.message ?? "Máy chủ từ chối yêu cầu.")
+            }
+            throw FFFeatureError.serverStatus(http.statusCode)
+        }
+        return try JSONDecoder().decode(FFGameLoginGrant.self, from: data)
+    }
+
+    static func activate(
+        feature: FFRemoteFeature,
+        game: FFGameKind,
+        key: String? = nil,
+        accessToken: String? = nil
+    ) async throws -> FFAccessGrant {
+        var body: [String: Any] = [
+            "action": "activate",
+            "game": game.rawValue,
+            "feature_id": feature.id,
+            "device_id": FFDeviceIdentity.value,
+            "build_id": HMBuildIdentity.id
+        ]
+        if let key, !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            body["key"] = key
+        }
+        if let accessToken, !accessToken.isEmpty {
+            body["access_token"] = accessToken
+        }
+        return try await request(body)
+    }
+
+    static func restore(record: FFActiveRecord, accessToken: String) async throws -> FFAccessGrant {
+        try await request([
+            "action": "restore",
+            "game": record.game.rawValue,
+            "feature_id": record.featureID,
+            "device_id": FFDeviceIdentity.value,
+            "build_id": HMBuildIdentity.id,
+            "access_token": accessToken
+        ])
+    }
+
+    static func activate(
+        feature: FFRemoteFeature,
+        gameKey: String,
+        key: String? = nil,
+        accessToken: String? = nil
+    ) async throws -> FFAccessGrant {
+        var body: [String: Any] = [
+            "action": "activate",
+            "game": gameKey,
+            "feature_id": feature.id,
+            "device_id": FFDeviceIdentity.value,
+            "build_id": HMBuildIdentity.id
+        ]
+        if let key, !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { body["key"] = key }
+        if let accessToken, !accessToken.isEmpty { body["access_token"] = accessToken }
+        return try await request(body)
+    }
+
+    static func restore(
+        gameKey: String,
+        featureID: String,
+        accessToken: String
+    ) async throws -> FFAccessGrant {
+        try await request([
+            "action": "restore",
+            "game": gameKey,
+            "feature_id": featureID,
+            "device_id": FFDeviceIdentity.value,
+            "build_id": HMBuildIdentity.id,
+            "access_token": accessToken
+        ])
+    }
+
+    static func authorizationStatus(
+        gameKey: String,
+        featureID: String,
+        accessToken: String
+    ) async throws -> FFSessionAuthorizationStatus {
+        guard let url = URL(string: accessURL) else { throw FFFeatureError.invalidServerURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "action": "status",
+            "game": gameKey,
+            "feature_id": featureID,
+            "device_id": FFDeviceIdentity.value,
+            "build_id": HMBuildIdentity.id,
+            "access_token": accessToken
+        ])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw FFFeatureError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            if let payload = try? JSONDecoder().decode(FFServerErrorPayload.self, from: data) {
+                throw FFServerAccessError(
+                    code: payload.code ?? "server_error",
+                    message: payload.message ?? "Máy chủ từ chối yêu cầu."
+                )
+            }
+            throw FFFeatureError.serverStatus(http.statusCode)
+        }
+        return try JSONDecoder().decode(FFSessionAuthorizationStatus.self, from: data)
+    }
+
+    private static func request(_ body: [String: Any]) async throws -> FFAccessGrant {
+        guard let url = URL(string: accessURL) else { throw FFFeatureError.invalidServerURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw FFFeatureError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            if let payload = try? JSONDecoder().decode(FFServerErrorPayload.self, from: data) {
+                throw FFServerAccessError(code: payload.code ?? "server_error", message: payload.message ?? "Máy chủ từ chối yêu cầu.")
+            }
+            throw FFFeatureError.serverStatus(http.statusCode)
+        }
+        return try JSONDecoder().decode(FFAccessGrant.self, from: data)
+    }
+}
+
+// MARK: - View model
+
+@MainActor
+final class FreeFireFeatureViewModel: ObservableObject {
+    private static let serverAPIURL = "https://miniapp.shopaccvt.site/proxy/api.php"
+    private static let activeRecordsKey = "ffFeatureActiveRecords.v2"
+    private static let keyAccessInfoKey = "hmGaming.ffKeyAccessInfo.v1"
+
+    @Published var selectedGame: FFGameKind = .freeFire
+    @Published var selectedCategory: FFFeatureCategory = .aim
+    @Published private(set) var remoteGames: [String: FFRemoteGame] = [:]
+    @Published private(set) var activeRecords: [FFActiveRecord] = []
+    @Published private(set) var keyAccessInfo: [String: FFKeyAccessInfo] = [:]
+    @Published private(set) var gameAccessStates: [String: FFGameAccessState] = [:]
+    @Published private(set) var busyIDs: Set<String> = []
+    @Published var isLoading = false
+    @Published var notice: String?
+    @Published var serverConfigurationError: String?
+    @Published var gameKeyPrompt: FFGameKeyPrompt?
+
+    private var hasLoaded = false
+
+    init() {
+        activeRecords = Self.readActiveRecords()
+        keyAccessInfo = Self.readKeyAccessInfo()
+        gameAccessStates = FFGameAccessStore.loadAll()
+    }
+
+    var visibleFeatures: [FFRemoteFeature] {
+        let all = remoteGames[selectedGame.rawValue]?.features ?? []
+        return all.filter { feature in
+            let rawCategory = feature.category?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "aim"
+            let categoryMatches = rawCategory == selectedCategory.rawValue
+            let shouldShow = feature.enabled || activeRecord(forFeatureID: feature.id, game: selectedGame) != nil
+            return categoryMatches && shouldShow
+        }
+    }
+
+    var orphanedActiveRecords: [FFActiveRecord] {
+        let known = Set((remoteGames[selectedGame.rawValue]?.features ?? []).map(\.id))
+        return activeRecords.filter { $0.game == selectedGame && !known.contains($0.featureID) }
+    }
+
+    var hasConfiguredServer: Bool { true }
+
+    func loadIfNeeded() {
+        guard !hasLoaded else { return }
+        hasLoaded = true
+        Task { await reload() }
+    }
+
+    func reload() async {
+        guard let baseURL = validatedAPIURL(from: Self.serverAPIURL),
+              var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            remoteGames = [:]
+            serverConfigurationError = FFFeatureError.invalidServerURL.localizedDescription
+            return
+        }
+        var items = components.queryItems ?? []
+        items.append(URLQueryItem(name: "build_id", value: HMBuildIdentity.id))
+        components.queryItems = items
+        guard let apiURL = components.url else {
+            remoteGames = [:]
+            serverConfigurationError = FFFeatureError.invalidServerURL.localizedDescription
+            return
+        }
+
+        isLoading = true
+        serverConfigurationError = nil
+        defer { isLoading = false }
+
+        do {
+            var request = URLRequest(url: apiURL)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            request.timeoutInterval = 30
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw FFFeatureError.invalidResponse }
+            guard (200...299).contains(http.statusCode) else {
+                if let payload = try? JSONDecoder().decode(FFServerErrorPayload.self, from: data) {
+                    throw FFServerAccessError(code: payload.code ?? "server_error", message: payload.message ?? "Máy chủ từ chối yêu cầu.")
+                }
+                throw FFFeatureError.serverStatus(http.statusCode)
+            }
+            let decoded = try JSONDecoder().decode(FFRemoteResponse.self, from: data)
+            var accepted: [String: FFRemoteGame] = [:]
+            for game in FFGameKind.allCases {
+                if let remote = decoded.games[game.rawValue] { accepted[game.rawValue] = remote }
+            }
+            remoteGames = accepted
+        } catch let error as FFServerAccessError {
+            serverConfigurationError = error.localizedDescription
+        } catch let error as FFFeatureError {
+            serverConfigurationError = error.localizedDescription
+        } catch {
+            serverConfigurationError = "Không tải được danh sách chức năng: \(error.localizedDescription)"
+        }
+    }
+
+    func isActive(_ feature: FFRemoteFeature, game: FFGameKind? = nil) -> Bool {
+        activeRecord(forFeatureID: feature.id, game: game ?? selectedGame) != nil
+    }
+
+    func isBusy(_ feature: FFRemoteFeature, game: FFGameKind? = nil) -> Bool {
+        busyIDs.contains(operationKey(featureID: feature.id, game: game ?? selectedGame))
+    }
+
+    func isGameAuthorized(_ game: FFGameKind? = nil) -> Bool {
+        let resolved = game ?? selectedGame
+        return gameAccessStates[resolved.rawValue] != nil
+    }
+
+    func isFeatureAuthorized(_ feature: FFRemoteFeature, game: FFGameKind? = nil) -> Bool {
+        // Key được xác thực theo ứng dụng/game, không theo từng feature nữa.
+        isGameAuthorized(game)
+    }
+
+    func promptForGameKeyIfNeeded(_ game: FFGameKind? = nil) {
+        let resolved = game ?? selectedGame
+        guard !isGameAuthorized(resolved) else { return }
+        gameKeyPrompt = FFGameKeyPrompt(gameKey: resolved.rawValue, gameName: resolved.title)
+    }
+
+    func promptForGameKey(_ game: FFGameKind? = nil) {
+        let resolved = game ?? selectedGame
+        gameKeyPrompt = FFGameKeyPrompt(gameKey: resolved.rawValue, gameName: resolved.title)
+    }
+
+    func loginGame(with key: String, prompt: FFGameKeyPrompt) async -> String? {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "Vui lòng nhập key." }
+        do {
+            let grant = try await FFAccessClient.login(gameKey: prompt.gameKey, key: trimmed)
+            guard let gameSessionToken = grant.accessTokens.values.first(where: { !$0.isEmpty }) else {
+                return "Máy chủ không cấp được phiên key cho ứng dụng."
+            }
+            FFAccessTokenStore.storeGameSession(gameSessionToken, gameKey: prompt.gameKey)
+
+            let previous = gameAccessStates[prompt.gameKey]
+            let previousGame = FFGameKind(rawValue: prompt.gameKey)
+            for fid in previous?.allowedFeatureIDs ?? [] {
+                let isStillNeededForRestore = previousGame.map { game in
+                    activeRecord(forFeatureID: fid, game: game) != nil
+                } ?? false
+                if !isStillNeededForRestore {
+                    FFAccessTokenStore.delete(gameKey: prompt.gameKey, featureID: fid)
+                    keyAccessInfo.removeValue(forKey: "\(prompt.gameKey):\(fid)")
+                }
+            }
+
+            for (fid, token) in grant.accessTokens where !token.isEmpty {
+                FFAccessTokenStore.store(token, gameKey: prompt.gameKey, featureID: fid)
+                keyAccessInfo["\(prompt.gameKey):\(fid)"] = FFKeyAccessInfo(
+                    expiresAt: grant.keyExpiresAt ?? "",
+                    maxDevices: max(1, grant.maxDevices ?? 1),
+                    deviceCount: max(0, grant.deviceCount ?? 0)
+                )
+            }
+            persistKeyAccessInfo()
+
+            gameAccessStates[prompt.gameKey] = FFGameAccessState(
+                allowedFeatureIDs: grant.allowedFeatures,
+                expiresAt: grant.keyExpiresAt ?? "",
+                maxDevices: max(1, grant.maxDevices ?? 1),
+                deviceCount: max(0, grant.deviceCount ?? 0),
+                scope: grant.keyScope ?? "single"
+            )
+            FFGameAccessStore.saveAll(gameAccessStates)
+            gameKeyPrompt = nil
+            notice = "Đã xác thực key cho \(prompt.gameName)"
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    func dismissGameKeyPrompt() { gameKeyPrompt = nil }
+
+    func clearGameAuthorization(_ game: FFGameKind) {
+        if let state = gameAccessStates[game.rawValue] {
+            for fid in state.allowedFeatureIDs {
+                // Giữ token của feature đang bật để người dùng vẫn có thể restore file gốc.
+                if activeRecord(forFeatureID: fid, game: game) == nil {
+                    FFAccessTokenStore.delete(gameKey: game.rawValue, featureID: fid)
+                    keyAccessInfo.removeValue(forKey: operationKey(featureID: fid, game: game))
+                }
+            }
+        }
+        FFAccessTokenStore.deleteGameSession(game: game)
+        gameAccessStates.removeValue(forKey: game.rawValue)
+        FFGameAccessStore.saveAll(gameAccessStates)
+        persistKeyAccessInfo()
+    }
+
+    func setFeature(_ feature: FFRemoteFeature, enabled: Bool) {
+        let game = selectedGame
+        let operation = operationKey(featureID: feature.id, game: game)
+        guard !busyIDs.contains(operation) else { return }
+
+        if enabled {
+            guard feature.enabled else {
+                notice = "Chức năng này đang bị tắt trên máy chủ."
+                return
+            }
+            guard isGameAuthorized(game) else {
+                gameKeyPrompt = FFGameKeyPrompt(gameKey: game.rawValue, gameName: game.title)
+                return
+            }
+            guard let token = FFAccessTokenStore.loadGameSession(game: game) else {
+                clearGameAuthorization(game)
+                gameKeyPrompt = FFGameKeyPrompt(gameKey: game.rawValue, gameName: game.title)
+                return
+            }
+
+            busyIDs.insert(operation)
+            Task {
+                defer { busyIDs.remove(operation) }
+                do {
+                    try await performActivation(feature: feature, game: game, key: nil, accessToken: token)
+                } catch let auth as FFServerAccessError where auth.shouldAskForKey {
+                    clearGameAuthorization(game)
+                    gameKeyPrompt = FFGameKeyPrompt(gameKey: game.rawValue, gameName: game.title)
+                } catch {
+                    notice = error.localizedDescription
+                }
+            }
+        } else {
+            restore(feature: feature, game: game)
+        }
+    }
+
+    private func performActivation(feature: FFRemoteFeature, game: FFGameKind, key: String?, accessToken: String?) async throws {
+        let grant = try await FFAccessClient.activate(feature: feature, game: game, key: key, accessToken: accessToken)
+        guard grant.ok else { throw FFFeatureError.invalidResponse }
+        if let newToken = grant.accessToken, !newToken.isEmpty {
+            FFAccessTokenStore.store(newToken, game: game, featureID: feature.id)
+        }
+
+        keyAccessInfo[operationKey(featureID: feature.id, game: game)] = FFKeyAccessInfo(
+            expiresAt: grant.keyExpiresAt ?? "",
+            maxDevices: max(1, grant.maxDevices ?? 1),
+            deviceCount: max(0, grant.deviceCount ?? 0)
+        )
+        persistKeyAccessInfo()
+
+        _ = try await FFFeatureInstaller.install(
+            remoteURL: grant.downloadURL,
+            expectedSHA256: grant.downloadSHA256 ?? feature.activeSHA256,
+            game: game,
+            destinationPath: grant.destinationPath
+        )
+
+        activeRecords.removeAll {
+            $0.game == game &&
+            $0.destinationPath == grant.destinationPath &&
+            $0.featureID != feature.id
+        }
+        activeRecords.removeAll { $0.game == game && $0.featureID == feature.id }
+        activeRecords.append(FFActiveRecord(
+            game: game,
+            featureID: feature.id,
+            name: feature.name,
+            destinationPath: grant.destinationPath,
+            originalSHA256: feature.originalSHA256
+        ))
+        persistActiveRecords()
+        notice = "Đã bật \(feature.name) thành công"
+    }
+
+    private func restore(feature: FFRemoteFeature, game: FFGameKind) {
+        let operation = operationKey(featureID: feature.id, game: game)
+        guard !busyIDs.contains(operation) else { return }
+        guard let record = activeRecord(forFeatureID: feature.id, game: game) else { return }
+        guard let token = FFAccessTokenStore.load(game: game, featureID: feature.id) else {
+            notice = "Không tìm thấy phiên khôi phục của chức năng này."
+            return
+        }
+        busyIDs.insert(operation)
+        Task {
+            defer { busyIDs.remove(operation) }
+            do {
+                try await performRestore(record: record, accessToken: token)
+                notice = "Đã tắt \(feature.name) thành công"
+            } catch {
+                notice = error.localizedDescription
+            }
+        }
+    }
+
+    func restoreOrphan(_ record: FFActiveRecord) {
+        let operation = operationKey(featureID: record.featureID, game: record.game)
+        guard !busyIDs.contains(operation) else { return }
+        guard let token = FFAccessTokenStore.load(game: record.game, featureID: record.featureID) else {
+            notice = "Không tìm thấy phiên khôi phục cho \(record.name)."
+            return
+        }
+        busyIDs.insert(operation)
+        Task {
+            defer { busyIDs.remove(operation) }
+            do {
+                try await performRestore(record: record, accessToken: token)
+                notice = "Đã khôi phục file gốc cho \(record.name)."
+            } catch {
+                notice = error.localizedDescription
+            }
+        }
+    }
+
+    private func performRestore(record: FFActiveRecord, accessToken: String) async throws {
+        let grant = try await FFAccessClient.restore(record: record, accessToken: accessToken)
+        _ = try await FFFeatureInstaller.install(
+            remoteURL: grant.downloadURL,
+            expectedSHA256: grant.downloadSHA256 ?? record.originalSHA256,
+            game: record.game,
+            destinationPath: grant.destinationPath
+        )
+        activeRecords.removeAll { $0.id == record.id }
+        persistActiveRecords()
+    }
+
+    private func activeRecord(forFeatureID id: String, game: FFGameKind) -> FFActiveRecord? {
+        activeRecords.first { $0.game == game && $0.featureID == id }
+    }
+
+    private func operationKey(featureID: String, game: FFGameKind) -> String {
+        "\(game.rawValue):\(featureID)"
+    }
+
+    private func validatedAPIURL(from raw: String) -> URL? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed), url.scheme?.lowercased() == "https", url.host != nil else { return nil }
+        return url
+    }
+
+    func keyStatusText(for feature: FFRemoteFeature, game: FFGameKind? = nil) -> String? {
+        let resolvedGame = game ?? selectedGame
+        let key = operationKey(featureID: feature.id, game: resolvedGame)
+        guard let info = keyAccessInfo[key] else { return nil }
+
+        let deviceText = "\(info.deviceCount)/\(info.maxDevices) thiết bị"
+        let rawExpiry = info.expiresAt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawExpiry.isEmpty else {
+            return "Key: Vô hạn • \(deviceText)"
+        }
+
+        let formatter = ISO8601DateFormatter()
+        guard let expiry = formatter.date(from: rawExpiry) else {
+            return "Key còn hạn • \(deviceText)"
+        }
+
+        let remaining = expiry.timeIntervalSinceNow
+        guard remaining > 0 else {
+            return "Key đã hết hạn"
+        }
+
+        let totalMinutes = Int(remaining / 60)
+        let days = totalMinutes / (24 * 60)
+        let hours = (totalMinutes % (24 * 60)) / 60
+        let minutes = totalMinutes % 60
+
+        let timeText: String
+        if days > 0 {
+            timeText = hours > 0 ? "\(days) ngày \(hours) giờ" : "\(days) ngày"
+        } else if hours > 0 {
+            timeText = minutes > 0 ? "\(hours) giờ \(minutes) phút" : "\(hours) giờ"
+        } else {
+            timeText = "\(max(1, minutes)) phút"
+        }
+        return "Còn hạn: \(timeText) • \(deviceText)"
+    }
+
+    private func persistKeyAccessInfo() {
+        guard let data = try? JSONEncoder().encode(keyAccessInfo) else { return }
+        UserDefaults.standard.set(data, forKey: Self.keyAccessInfoKey)
+    }
+
+    private static func readKeyAccessInfo() -> [String: FFKeyAccessInfo] {
+        guard let data = UserDefaults.standard.data(forKey: keyAccessInfoKey),
+              let info = try? JSONDecoder().decode([String: FFKeyAccessInfo].self, from: data) else { return [:] }
+        return info
+    }
+
+    private func persistActiveRecords() {
+        guard let data = try? JSONEncoder().encode(activeRecords) else { return }
+        UserDefaults.standard.set(data, forKey: Self.activeRecordsKey)
+    }
+
+    private static func readActiveRecords() -> [FFActiveRecord] {
+        guard let data = UserDefaults.standard.data(forKey: activeRecordsKey),
+              let records = try? JSONDecoder().decode([FFActiveRecord].self, from: data) else { return [] }
+        return records
+    }
+}
+
+struct FFGameKeyEntrySheet: View {
+    @ObservedObject var model: FreeFireFeatureViewModel
+    let prompt: FFGameKeyPrompt
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var key = ""
+    @State private var errorMessage: String?
+    @State private var isSubmitting = false
+
+    private let accent = Color(red: 1.0, green: 0.72, blue: 0.05)
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("KEY ỨNG DỤNG")
+                            .font(.system(size: 11, weight: .heavy, design: .rounded))
+                            .tracking(1.8)
+                            .foregroundStyle(accent)
+                        Text(prompt.gameName.uppercased())
+                            .font(.system(size: 25, weight: .black, design: .rounded))
+                            .foregroundStyle(.white)
+                        Text("Nhập key một lần cho ứng dụng này. Sau khi xác thực, các chức năng mà key được cấp quyền sẽ dùng chung phiên key này.")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(Color.white.opacity(0.55))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    SecureField("Nhập key ứng dụng", text: $key)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                        .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .frame(height: 50)
+                        .background(Color.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.white.opacity(0.10), lineWidth: 1))
+
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.red.opacity(0.9))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Button {
+                        guard !isSubmitting else { return }
+                        isSubmitting = true
+                        errorMessage = nil
+                        Task {
+                            let error = await model.loginGame(with: key, prompt: prompt)
+                            await MainActor.run {
+                                isSubmitting = false
+                                if let error { errorMessage = error } else { dismiss() }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 9) {
+                            if isSubmitting { ProgressView().tint(.black) } else { Image(systemName: "checkmark.shield.fill") }
+                            Text(isSubmitting ? "Đang xác thực…" : "Xác thực key")
+                        }
+                        .font(.system(size: 15, weight: .heavy, design: .rounded))
+                        .foregroundStyle(.black)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isSubmitting || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .opacity(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.55 : 1)
+
+                    Spacer()
+                }
+                .padding(20)
+            }
+            .navigationTitle("Nhập key")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Đóng") { model.dismissGameKeyPrompt(); dismiss() }.foregroundStyle(accent)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
+    }
+}
+
+// MARK: - In-app GetKey browser
+
+struct FFGetKeySafariView: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let controller = SFSafariViewController(url: url)
+        controller.preferredControlTintColor = UIColor(red: 1.0, green: 0.72, blue: 0.05, alpha: 1.0)
+        controller.dismissButtonStyle = .close
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
+}
+
+// MARK: - UI
+
+struct FreeFireFeaturesView: View {
+    let lockedGame: FFGameKind?
+
+    @StateObject private var model = FreeFireFeatureViewModel()
+    @State private var showGetKey = false
+    @State private var noticeDismissTask: Task<Void, Never>?
+
+    init(lockedGame: FFGameKind? = nil) {
+        self.lockedGame = lockedGame
+    }
+
+    private let accent = Color(red: 1.0, green: 0.72, blue: 0.05)
+    private let card = Color(red: 0.075, green: 0.075, blue: 0.082)
+    private let cardBorder = Color.white.opacity(0.085)
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            Color.black.ignoresSafeArea()
+
+            ScrollView(showsIndicators: false) {
+                LazyVStack(spacing: 18) {
+                    topHeader
+                    heroBanner
+                    if lockedGame == nil {
+                        gameSelector
+                    }
+                    categorySelector
+                    keyAccessCard
+                    getKeyButton
+                    featureHeader
+                    mainContent
+                    statusCard
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 12)
+                .padding(.bottom, 28)
+            }
+            .refreshable { await model.reload() }
+
+            if let notice = model.notice {
+                noticeToast(notice)
+                    .padding(.horizontal, 18)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(100)
+            }
+        }
+        .sheet(item: $model.gameKeyPrompt) { prompt in
+            FFGameKeyEntrySheet(model: model, prompt: prompt)
+        }
+        .sheet(isPresented: $showGetKey) {
+            if let url = getKeyURL {
+                FFGetKeySafariView(url: url)
+                    .ignoresSafeArea()
+            }
+        }
+        .onAppear {
+            if let lockedGame {
+                model.selectedGame = lockedGame
+                model.selectedCategory = .aim
+            }
+            model.loadIfNeeded()
+            model.promptForGameKeyIfNeeded(lockedGame ?? model.selectedGame)
+        }
+        .onChange(of: model.notice) { newValue in
+            noticeDismissTask?.cancel()
+            guard newValue != nil else { return }
+
+            noticeDismissTask = Task {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        model.notice = nil
+                    }
+                }
+            }
+        }
+        .onDisappear {
+            noticeDismissTask?.cancel()
+        }
+    }
+
+    private func noticeToast(_ text: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: toastIcon(for: text))
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(toastAccent(for: text))
+
+            Text(text)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(red: 0.075, green: 0.075, blue: 0.082).opacity(0.98))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(toastAccent(for: text).opacity(0.45), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.38), radius: 14, y: 7)
+    }
+
+    private func toastAccent(for text: String) -> Color {
+        let lowered = text.lowercased()
+        if lowered.contains("đã bật") || lowered.contains("đã tắt") || lowered.contains("đã khôi phục") {
+            return Color.green
+        }
+        return accent
+    }
+
+    private func toastIcon(for text: String) -> String {
+        let lowered = text.lowercased()
+        if lowered.contains("đã bật") || lowered.contains("đã tắt") || lowered.contains("đã khôi phục") {
+            return "checkmark.circle.fill"
+        }
+        return "exclamationmark.circle.fill"
+    }
+
+    private var topHeader: some View {
+        ZStack {
+            VStack(spacing: 0) {
+                HStack(spacing: 6) {
+                    Image(systemName: "crown.fill")
+                        .font(.system(size: 12, weight: .bold))
+                    Text("HM")
+                        .font(.system(size: 27, weight: .black, design: .rounded))
+                }
+                .foregroundStyle(accent)
+
+                Text("GAMING")
+                    .font(.system(size: 11, weight: .heavy, design: .rounded))
+                    .tracking(2.3)
+                    .foregroundStyle(Color.white.opacity(0.68))
+            }
+
+            HStack {
+                Circle()
+                    .fill(card)
+                    .frame(width: 44, height: 44)
+                    .overlay {
+                        Image(systemName: "flame.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(accent)
+                    }
+                    .overlay(Circle().stroke(cardBorder, lineWidth: 1))
+
+                Spacer()
+
+                Color.clear
+                    .frame(width: 44, height: 44)
+            }
+        }
+        .frame(height: 54)
+    }
+
+    private var heroBanner: some View {
+        ZStack(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.10, green: 0.085, blue: 0.035),
+                            Color(red: 0.055, green: 0.055, blue: 0.06),
+                            Color.black
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+
+            GeometryReader { proxy in
+                Circle()
+                    .fill(accent.opacity(0.16))
+                    .frame(width: 180, height: 180)
+                    .blur(radius: 6)
+                    .offset(x: proxy.size.width - 125, y: -48)
+
+                Image(systemName: "flame.fill")
+                    .font(.system(size: 104, weight: .black))
+                    .foregroundStyle(accent.opacity(0.86))
+                    .rotationEffect(.degrees(-8))
+                    .offset(x: proxy.size.width - 110, y: 33)
+            }
+            .clipped()
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text(model.selectedGame == .freeFire ? "FREE FIRE" : "FREE FIRE MAX")
+                    .font(.system(size: model.selectedGame == .freeFire ? 34 : 28, weight: .black, design: .rounded))
+                    .foregroundStyle(.white)
+
+                Text("SERVER FEATURE PANEL")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .tracking(1.8)
+                    .foregroundStyle(accent)
+
+                Text("Chọn AIM, AIM V2 hoặc ESP rồi bật chức năng bạn muốn sử dụng.")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.58))
+                    .frame(maxWidth: 230, alignment: .leading)
+            }
+            .padding(22)
+        }
+        .frame(height: 174)
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(accent.opacity(0.24), lineWidth: 1)
+        )
+    }
+
+    private var gameSelector: some View {
+        HStack(spacing: 10) {
+            ForEach(FFGameKind.allCases) { game in
+                gameCard(game)
+            }
+        }
+    }
+
+    private func gameCard(_ game: FFGameKind) -> some View {
+        let selected = model.selectedGame == game
+        return Button {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                model.selectedGame = game
+                model.selectedCategory = .aim
+            }
+            model.promptForGameKeyIfNeeded(game)
+        } label: {
+            HStack(spacing: 11) {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(selected ? accent.opacity(0.16) : Color.white.opacity(0.055))
+                    .frame(width: 48, height: 48)
+                    .overlay {
+                        Image(systemName: game == .freeFire ? "flame.fill" : "bolt.fill")
+                            .font(.system(size: 21, weight: .bold))
+                            .foregroundStyle(selected ? accent : Color.white.opacity(0.70))
+                    }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(game == .freeFire ? "FREE FIRE" : "FF MAX")
+                        .font(.system(size: 14, weight: .heavy, design: .rounded))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Text(game == .freeFire ? "Garena Free Fire" : "Free Fire MAX")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(selected ? accent.opacity(0.95) : Color.white.opacity(0.45))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(selected ? accent.opacity(0.075) : card)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(selected ? accent : cardBorder, lineWidth: selected ? 1.8 : 1)
+            )
+            .shadow(color: selected ? accent.opacity(0.15) : .clear, radius: 12)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var categorySelector: some View {
+        HStack(spacing: 10) {
+            ForEach(FFFeatureCategory.allCases) { category in
+                let selected = model.selectedCategory == category
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        model.selectedCategory = category
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: category.icon)
+                            .font(.system(size: 14, weight: .bold))
+                        Text(category.title)
+                            .font(.system(size: 13.5, weight: .heavy, design: .rounded))
+                    }
+                    .foregroundStyle(selected ? Color.black : Color.white.opacity(0.68))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(selected ? accent : card)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(selected ? accent : cardBorder, lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var keyAccessCard: some View {
+        let state = model.gameAccessStates[model.selectedGame.rawValue]
+        return HStack(spacing: 12) {
+            Image(systemName: state == nil ? "key.fill" : "checkmark.shield.fill")
+                .font(.system(size: 17, weight: .bold))
+                .foregroundStyle(accent)
+                .frame(width: 38, height: 38)
+                .background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 11))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(state == nil ? "CHƯA NHẬP KEY" : "KEY ĐÃ XÁC THỰC")
+                    .font(.system(size: 12.5, weight: .heavy, design: .rounded))
+                    .foregroundStyle(.white)
+                if let state {
+                    Text("Được dùng \(state.allowedFeatureIDs.count) chức năng • \(state.deviceCount)/\(state.maxDevices) thiết bị")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.48))
+                } else {
+                    Text("Nhập key của \(model.selectedGame.title) để mở các chức năng được cấp.")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.48))
+                }
+            }
+            Spacer()
+            Button(state == nil ? "NHẬP KEY" : "ĐỔI KEY") { model.promptForGameKey(model.selectedGame) }
+                .font(.system(size: 11.5, weight: .heavy))
+                .foregroundStyle(.black)
+                .padding(.horizontal, 12)
+                .frame(height: 34)
+                .background(accent, in: Capsule())
+                .buttonStyle(.plain)
+        }
+        .padding(14)
+        .background(card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(cardBorder, lineWidth: 1))
+    }
+
+    private var getKeyButton: some View {
+        Button {
+            showGetKey = true
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "key.fill")
+                    .font(.system(size: 15, weight: .bold))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("NHẬN KEY")
+                        .font(.system(size: 14, weight: .heavy, design: .rounded))
+                    Text("\(model.selectedGame.title) • \(model.selectedCategory.title)")
+                        .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                        .opacity(0.68)
+                }
+
+                Spacer()
+
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 13, weight: .bold))
+            }
+            .foregroundStyle(.black)
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity)
+            .frame(height: 54)
+            .background(accent, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .shadow(color: accent.opacity(0.18), radius: 12, y: 4)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var getKeyURL: URL? {
+        guard var components = URLComponents(string: "https://miniapp.shopaccvt.site/proxy/getkey.php") else { return nil }
+        components.queryItems = [
+            URLQueryItem(name: "game", value: model.selectedGame.rawValue),
+            URLQueryItem(name: "category", value: model.selectedCategory.rawValue)
+        ]
+        return components.url
+    }
+
+    private var featureHeader: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "bolt.fill")
+                .foregroundStyle(accent)
+            Text("CHỨC NĂNG")
+                .font(.system(size: 17, weight: .heavy, design: .rounded))
+                .foregroundStyle(.white)
+
+            Spacer()
+
+            Button {
+                Task { await model.reload() }
+            } label: {
+                HStack(spacing: 7) {
+                    if model.isLoading {
+                        ProgressView()
+                            .tint(.white)
+                            .scaleEffect(0.75)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    Text("Làm mới")
+                }
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.72))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(card, in: Capsule())
+                .overlay(Capsule().stroke(cardBorder, lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .disabled(model.isLoading || !model.hasConfiguredServer)
+        }
+        .padding(.top, 2)
+    }
+
+    @ViewBuilder
+    private var mainContent: some View {
+        if let error = model.serverConfigurationError {
+            serverStateCard(error)
+        } else if model.isLoading && model.visibleFeatures.isEmpty {
+            loadingCard
+        } else if !model.hasConfiguredServer {
+            serverStateCard("Chưa cấu hình máy chủ.")
+        } else if model.visibleFeatures.isEmpty && model.orphanedActiveRecords.isEmpty {
+            emptyCard
+        } else {
+            ForEach(model.visibleFeatures) { feature in
+                featureCard(feature)
+            }
+
+            if !model.orphanedActiveRecords.isEmpty {
+                orphanedSection
+            }
+        }
+    }
+
+    private var loadingCard: some View {
+        HStack(spacing: 13) {
+            ProgressView().tint(accent)
+            Text("Đang tải danh sách chức năng…")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.65))
+            Spacer()
+        }
+        .padding(18)
+        .background(card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(cardBorder, lineWidth: 1))
+    }
+
+    private func serverStateCard(_ text: String) -> some View {
+        HStack(spacing: 14) {
+            featureIcon(systemName: "server.rack", active: false)
+            VStack(alignment: .leading, spacing: 5) {
+                Text("MÁY CHỦ")
+                    .font(.system(size: 14, weight: .heavy, design: .rounded))
+                    .foregroundStyle(.white)
+                Text(text)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.52))
+                    .lineLimit(3)
+            }
+            Spacer()
+        }
+        .padding(16)
+        .background(card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(cardBorder, lineWidth: 1))
+    }
+
+    private var emptyCard: some View {
+        VStack(spacing: 11) {
+            Image(systemName: "square.grid.2x2.fill")
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundStyle(accent)
+            Text("Chưa có chức năng")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(.white)
+            Text("Chưa có chức năng \(model.selectedCategory.title). Thêm trên Admin rồi bấm Làm mới.")
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.50))
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 30)
+        .background(card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(cardBorder, lineWidth: 1))
+    }
+
+    private func featureCard(_ feature: FFRemoteFeature) -> some View {
+        let isActive = model.isActive(feature)
+        let isBusy = model.isBusy(feature)
+        let presentation = featurePresentation(for: feature.name)
+
+        return HStack(spacing: 14) {
+            featureIcon(systemName: presentation.icon, active: isActive)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(feature.name.uppercased())
+                    .font(.system(size: 15, weight: .heavy, design: .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+
+                let authorized = model.isFeatureAuthorized(feature)
+                let keyStatus = model.keyStatusText(for: feature)
+                Text(!authorized && !isActive ? "Key hiện tại không cấp quyền" : (keyStatus ?? (isActive ? "Đang kích hoạt" : presentation.subtitle)))
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(
+                        !authorized && !isActive
+                        ? Color.white.opacity(0.38)
+                        : (keyStatus == "Key đã hết hạn" ? Color.red.opacity(0.88) : (keyStatus != nil ? accent : (isActive ? accent : Color.white.opacity(0.48))))
+                    )
+                    .lineLimit(1)
+
+                if let note = feature.note?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
+                    Text(note)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(0.42))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if !feature.enabled && isActive {
+                    Text("Đã ẩn trên server • tắt để khôi phục")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            if isBusy {
+                ProgressView()
+                    .tint(accent)
+                    .frame(width: 50, height: 32)
+            } else {
+                Toggle("", isOn: Binding(
+                    get: { model.isActive(feature) },
+                    set: { model.setFeature(feature, enabled: $0) }
+                ))
+                .labelsHidden()
+                .tint(accent)
+                .disabled(!feature.enabled && !isActive)
+            }
+        }
+        .padding(.horizontal, 15)
+        .padding(.vertical, 14)
+        .background(card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(isActive ? accent.opacity(0.35) : cardBorder, lineWidth: 1)
+        )
+    }
+
+    private func featureIcon(systemName: String, active: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .fill(accent.opacity(active ? 0.18 : 0.095))
+            .frame(width: 50, height: 50)
+            .overlay {
+                Image(systemName: systemName)
+                    .font(.system(size: 21, weight: .bold))
+                    .foregroundStyle(accent)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(accent.opacity(active ? 0.32 : 0.12), lineWidth: 1)
+            )
+    }
+
+    private func featurePresentation(for rawName: String) -> (icon: String, subtitle: String) {
+        let name = rawName.lowercased()
+        if name.contains("esp") || name.contains("map") { return ("scope", "Chức năng hiển thị") }
+        if name.contains("invi") || name.contains("vô hình") { return ("eye.slash.fill", "Chức năng nhân vật") }
+        if name.contains("tele") { return ("figure.run", "Chức năng di chuyển") }
+        if name.contains("ghost") || name.contains("xuyên") { return ("circle.dotted", "Chức năng tùy chỉnh") }
+        if name.contains("freeze") || name.contains("đóng băng") { return ("snowflake", "Chức năng tùy chỉnh") }
+        if name.contains("speed") || name.contains("tốc") { return ("gauge.with.dots.needle.67percent", "Chức năng tốc độ") }
+        if name.contains("lag") || name.contains("ping") { return ("wifi", "Chức năng mạng") }
+        if name.contains("aim") { return ("dot.scope", "Chức năng ngắm") }
+        if name.contains("skin") || name.contains("avatar") { return ("person.crop.square.fill", "Tùy chỉnh tài nguyên") }
+        return ("bolt.fill", "Chạm công tắc để bật/tắt")
+    }
+
+    private var orphanedSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.uturn.backward.circle.fill")
+                    .foregroundStyle(.orange)
+                Text("CẦN KHÔI PHỤC")
+                    .font(.system(size: 12, weight: .heavy, design: .rounded))
+                    .foregroundStyle(Color.white.opacity(0.68))
+            }
+
+            ForEach(model.orphanedActiveRecords) { record in
+                HStack(spacing: 13) {
+                    featureIcon(systemName: "arrow.uturn.backward", active: false)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(record.name.uppercased())
+                            .font(.system(size: 14, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                        Text("Chức năng không còn trên server")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(Color.white.opacity(0.46))
+                    }
+                    Spacer()
+                    Button {
+                        model.restoreOrphan(record)
+                    } label: {
+                        if model.busyIDs.contains("\(record.game.rawValue):\(record.featureID)") {
+                            ProgressView().tint(accent)
+                        } else {
+                            Image(systemName: "arrow.uturn.backward")
+                                .font(.system(size: 14, weight: .bold))
+                        }
+                    }
+                    .frame(width: 40, height: 40)
+                    .foregroundStyle(.black)
+                    .background(accent, in: Circle())
+                    .buttonStyle(.plain)
+                }
+                .padding(14)
+                .background(card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(cardBorder, lineWidth: 1))
+            }
+        }
+    }
+
+    private var statusCard: some View {
+        let activeCount = model.activeRecords.filter { $0.game == model.selectedGame }.count
+        return HStack(spacing: 13) {
+            featureIcon(systemName: activeCount > 0 ? "checkmark.shield.fill" : "shield.fill", active: activeCount > 0)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 4) {
+                    Text("Trạng thái:")
+                        .foregroundStyle(.white)
+                    Text(activeCount > 0 ? "Đang kích hoạt" : "Chưa kích hoạt")
+                        .foregroundStyle(activeCount > 0 ? accent : Color.white.opacity(0.55))
+                }
+                .font(.system(size: 14, weight: .bold, design: .rounded))
+
+                Text(activeCount > 0 ? "Đang bật \(activeCount) chức năng cho \(model.selectedGame.title)." : "Chọn một chức năng phía trên để bắt đầu.")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.45))
+            }
+            Spacer()
+        }
+        .padding(15)
+        .background(card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(cardBorder, lineWidth: 1))
+    }
+}
